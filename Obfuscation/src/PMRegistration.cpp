@@ -6,7 +6,6 @@
 #include "VMFlatten.h" // 虚拟机控制流平坦化
 #include "IndirectBranch.h" // 间接跳转
 #include "FunctionWrapper.h" // 函数嵌套
-#include "FlatteningEnhanced.h" // 平坦化控制流增强版
 #include "BogusControlFlow.h" // 虚假控制流
 #include "llvm/Transforms/Utils/SymbolRewriter.h" // 重命名符号
 #include "IndirectCall.h" // 间接调用
@@ -63,7 +62,7 @@ llvm::PassPluginLibraryInfo getSsagePluginInfo() {
             PB.registerPipelineParsingCallback(
               [&](StringRef Name, FunctionPassManager &FPM,
                 ArrayRef<PassBuilder::PipelineElement>) {
-                if(Name == "ofla"){ // 注册控制流平坦化
+                if(Name == "fla"){ // 注册控制流平坦化
                   FPM.addPass(FlatteningPass(true));
                   return true;
                 }
@@ -101,10 +100,6 @@ llvm::PassPluginLibraryInfo getSsagePluginInfo() {
                     MPM.addPass(StringEncryptionPass(true));
                     return true;
                   }
-                  if(Name == "enfla"){ // 注册控制流平坦化
-                    MPM.addPass(FlatteningEnhanced(true));
-                    return true;
-                  }
                   if(Name == "funwra"){
                     MPM.addPass(FunctionWrapperPass(true));
                     return true;
@@ -130,8 +125,6 @@ llvm::PassPluginLibraryInfo getSsagePluginInfo() {
                       for(auto Name: SplitString(PassOrder)){
                         if (Name == "strenc"){
                           MPM.addPass(StringEncryptionPass(true));
-                        } else if(Name == "enfla"){ // 注册控制流平坦化
-                          MPM.addPass(FlatteningEnhanced(true));
                         } else if(Name == "funwra"){
                           MPM.addPass(FunctionWrapperPass(true));
                         } else if (Name == "ipobf"){
@@ -145,7 +138,7 @@ llvm::PassPluginLibraryInfo getSsagePluginInfo() {
                         if (Name.starts_with("function")) {
                           llvm::FunctionPassManager FPM;
 
-                          if(Name == "function(ofla)"){ // 注册控制流平坦化
+                          if(Name == "function(fla)"){ // 注册控制流平坦化
                             FPM.addPass(FlatteningPass(true));
                           } else if(Name == "function(mba)"){
                             FPM.addPass(MBAObfuscation(true)); // 来自 Pluto 的线性混合布尔算术混淆
