@@ -98,7 +98,7 @@ if (${SUPPORTS_FVISIBILITY_INLINES_HIDDEN_FLAG} EQUAL "1")
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fvisibility-inlines-hidden")
 endif()
 
-find_package(Eigen3 REQUIRED NO_MODULE)
+find_package(Z3 REQUIRED NO_MODULE)
 
 #===============================================================================
 # 4. ADD SUB-TARGETS
@@ -144,7 +144,7 @@ if(WIN32)
   target_link_libraries(SsageObfuscator ${llvm_libs})
 endif()
 
-target_link_libraries(SsageObfuscator Eigen3::Eigen)
+target_link_libraries(SsageObfuscator ${Z3_LIBRARIES})
 
 #===============================================================================
 # 5. ADD TESTS

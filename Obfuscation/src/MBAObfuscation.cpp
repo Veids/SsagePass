@@ -18,7 +18,7 @@ static cl::opt<int>
              cl::desc("<mba-prob> percent chance to perform obfuscation for "
                       "each binary operation."));
 static cl::opt<int>
-    TermsNumber("linear-mba-terms", cl::init(10),
+    TermsNumber("linear-mba-terms", cl::init(5),
                 cl::desc("Choose <linear-mba-terms> boolean exprs to construct "
                          "the linear MBA expr."));
 
@@ -31,16 +31,18 @@ PreservedAnalyses MBAObfuscation::run(Function& F, FunctionAnalysisManager& AM) 
         INIT_CONTEXT(F);
         DoMBAObfuscation(*tmp);
     }
-    return PreservedAnalyses::none();
+    PreservedAnalyses PA;
+    PA.preserveSet<CFGAnalyses>();
+    return PA;
 }
 
 
 void MBAObfuscation::substituteConstant(Instruction *I, int i) {
     ConstantInt *val = dyn_cast<ConstantInt>(I->getOperand(i));
     if (val && val->getBitWidth() <= 64) {
-        int64_t *terms = generateLinearMBA(TermsNumber);
-        terms[14] -= val->getValue().getZExtValue();
-        Value *mbaExpr = insertLinearMBA(terms, I);
+        int64_t *coeffs = generateLinearMBA(TermsNumber);
+        coeffs[14] -= val->getValue().getZExtValue();
+        Value *mbaExpr = insertLinearMBA(coeffs, I);
         if (val->getBitWidth() <= 32) {
             mbaExpr = insertPolynomialMBA(mbaExpr, I);
         }
@@ -78,35 +80,45 @@ void MBAObfuscation::substitute(BinaryOperator *BI) {
 }
 
 Value *MBAObfuscation::substituteAdd(BinaryOperator *BI) {
-    int64_t *terms = generateLinearMBA(TermsNumber);
-    terms[2] += 1;
-    terms[4] += 1;
-    return insertLinearMBA(terms, BI);
+    int64_t *coeffs = generateLinearMBA(TermsNumber);
+    coeffs[2] += 1;
+    coeffs[4] += 1;
+    Value *mbaExpr = insertLinearMBA(coeffs, BI);
+    delete[] coeffs;
+    return mbaExpr;
 }
 
 Value *MBAObfuscation::substituteSub(BinaryOperator *BI) {
-    int64_t *terms = generateLinearMBA(TermsNumber);
-    terms[2] += 1;
-    terms[4] -= 1;
-    return insertLinearMBA(terms, BI);
+    int64_t *coeffs = generateLinearMBA(TermsNumber);
+    coeffs[2] += 1;
+    coeffs[4] -= 1;
+    Value *mbaExpr = insertLinearMBA(coeffs, BI);
+    delete[] coeffs;
+    return mbaExpr;
 }
 
 Value *MBAObfuscation::substituteXor(BinaryOperator *BI) {
-    int64_t *terms = generateLinearMBA(TermsNumber);
-    terms[5] += 1;
-    return insertLinearMBA(terms, BI);
+    int64_t *coeffs = generateLinearMBA(TermsNumber);
+    coeffs[5] += 1;
+    Value *mbaExpr = insertLinearMBA(coeffs, BI);
+    delete[] coeffs;
+    return mbaExpr;
 }
 
 Value *MBAObfuscation::substituteAnd(BinaryOperator *BI) {
-    int64_t *terms = generateLinearMBA(TermsNumber);
-    terms[0] += 1;
-    return insertLinearMBA(terms, BI);
+    int64_t *coeffs = generateLinearMBA(TermsNumber);
+    coeffs[0] += 1;
+    Value *mbaExpr = insertLinearMBA(coeffs, BI);
+    delete[] coeffs;
+    return mbaExpr;
 }
 
 Value *MBAObfuscation::substituteOr(BinaryOperator *BI) {
-    int64_t *terms = generateLinearMBA(TermsNumber);
-    terms[6] += 1;
-    return insertLinearMBA(terms, BI);
+    int64_t *coeffs = generateLinearMBA(TermsNumber);
+    coeffs[6] += 1;
+    Value *mbaExpr = insertLinearMBA(coeffs, BI);
+    delete[] coeffs;
+    return mbaExpr;
 }
 
 void MBAObfuscation::DoMBAObfuscation(Function &F){
