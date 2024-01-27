@@ -22,7 +22,7 @@ namespace llvm{
                 this->flag = flag;
             } // 携带flag的构造函数
             PreservedAnalyses run(Function &F, FunctionAnalysisManager &AM);
-            void flatten(Function &F);
+            PreservedAnalyses flatten(Function &F);
             static bool isRequired() { return true; }
     };
     FlatteningPass *createFlattening(bool flag);
