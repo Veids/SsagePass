@@ -60,6 +60,16 @@ namespace llvm {
                     BasicBlock *B, BasicBlock *C,
                     std::map<GlobalVariable *, std::pair<Constant *, GlobalVariable *>>
                     &GV2Keys);
+
+            void processStructMembers(ConstantStruct *,
+                    std::vector<GlobalVariable *> *,
+                    std::vector<GlobalVariable *> *,
+                    std::set<User *> *, bool *);
+
+            void processArrayMembers(ConstantArray *CA,
+                    std::vector<GlobalVariable *> *,
+                    std::vector<GlobalVariable *> *,
+                    std::set<User *> *, bool *);
     };
     HikariStringEncryptionPass *createHikariStringEncryption(bool flag); // 创建字符串加密
 }
