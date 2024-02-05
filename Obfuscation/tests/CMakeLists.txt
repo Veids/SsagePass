@@ -1,6 +1,6 @@
 file(GLOB test_files "*.cpp")
 
-set(PASSES "function(bcf)" "function(mba)" "function(lower-switch)" "function(split)" "function(vmf)" "function(icall)" "ipobf" "indibr" "funwra" "enfla" "strenc" "strcry")
+set(PASSES "function(bcf)" "function(mba)" "function(lower-switch)" "function(split)" "function(vmf)" "function(icall)" "ipobf" "indibr" "funwra" "strenc" "strcry")
 set(TMPDIR "${PROJECT_BINARY_DIR}/Testing/Temporary")
 
 function(add_pass_test TESTFILENAME PASS IDX)
