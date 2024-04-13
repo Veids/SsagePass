@@ -11,7 +11,6 @@
 #include "llvm/LinkAllPasses.h"
 #include "llvm/Transforms/Utils/Local.h"
 #include "llvm/Transforms/Utils/Cloning.h"
-#include "llvm/Transforms/IPO/PassManagerBuilder.h"
 
 #include "Utils.h"
 #include "CryptoUtils.h"

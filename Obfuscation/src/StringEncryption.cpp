@@ -21,7 +21,7 @@ PreservedAnalyses StringEncryptionPass::run(Module &M, ModuleAnalysisManager& AM
     INIT_CONTEXT(M);
     vector<GlobalVariable *> GVs;
 
-    for (GlobalVariable &GV : M.getGlobalList()) {
+    for (GlobalVariable &GV : M.globals()) {
         GVs.push_back(&GV);
     }
 
