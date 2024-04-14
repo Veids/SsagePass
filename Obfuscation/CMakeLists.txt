@@ -98,7 +98,14 @@ if (${SUPPORTS_FVISIBILITY_INLINES_HIDDEN_FLAG} EQUAL "1")
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fvisibility-inlines-hidden")
 endif()
 
-find_package(Z3 REQUIRED NO_MODULE)
+find_package(Z3 NO_MODULE QUIET)
+if (NOT Z3_FOUND)
+  find_library(Z3_LIBRARIES NAMES z3 libz3)
+
+  if (NOT Z3_LIBRARIES)
+    message(FATAL_ERROR "Couldn't find z3 library")
+  endif()
+endif()
 
 #===============================================================================
 # 4. ADD SUB-TARGETS
