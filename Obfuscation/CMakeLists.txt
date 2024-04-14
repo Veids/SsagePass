@@ -118,7 +118,6 @@ add_library( SsageObfuscator MODULE # 生成动态库文件
   src/Utils.cpp
   src/CryptoUtils.cpp
   src/Flattening.cpp
-  src/LegacyLowerSwitch.cpp
   src/PMRegistration.cpp
   src/StringEncryption.cpp
   src/IndirectBranch.cpp

@@ -9,7 +9,6 @@
 #include "BogusControlFlow.h" // 虚假控制流
 #include "llvm/Transforms/Utils/SymbolRewriter.h" // 重命名符号
 #include "IndirectCall.h" // 间接调用
-#include "LegacyLowerSwitch.h"
 #include "HikariStringEncryption.h"
 #include "llvm/Passes/PassBuilder.h"
 #include "llvm/Passes/PassPlugin.h"
@@ -85,10 +84,6 @@ llvm::PassPluginLibraryInfo getSsagePluginInfo() {
                   FPM.addPass(BogusControlFlowPass(true));
                   return true;
                 }
-                if(Name == "lower-switch"){ // 注册虚假控制流
-                  FPM.addPass(LegacyLowerSwitch(true));
-                  return true;
-                }
                 if(Name == "vmf"){ // 注册虚假控制流
                   FPM.addPass(VMFlattenPass(true));
                   return true;
@@ -151,8 +146,6 @@ llvm::PassPluginLibraryInfo getSsagePluginInfo() {
                             FPM.addPass(IndirectCallPass(true)); // 来自goron的间接调用
                           } else if(Name == "function(bcf)"){ // 注册虚假控制流
                             FPM.addPass(BogusControlFlowPass(true));
-                          } else if(Name == "function(lower-switch)"){ // 注册虚假控制流
-                            FPM.addPass(LegacyLowerSwitch(true));
                           } else if(Name == "function(vmf)"){ // 注册虚假控制流
                             FPM.addPass(VMFlattenPass(true));
                           } else {

@@ -1,14 +1,14 @@
 #ifndef LLVM_FLATTENING_H
 #define LLVM_FLATTENING_H
 // LLVM libs
-#include "llvm/Pass.h"
-#include "llvm/IR/Function.h"
+#include "llvm/ADT/Statistic.h"
+#include "llvm/IR/Constants.h"
 #include "llvm/IR/Instructions.h"
-#include "llvm/Transforms/Utils.h"
-#include "llvm/Support/CommandLine.h"
-#include "llvm/Support/raw_ostream.h"
-#include "llvm/IR/LegacyPassManager.h"
-#include "llvm/Transforms/Utils/Local.h"
+#include "llvm/Passes/PassBuilder.h"
+#include "llvm/Transforms/Utils/LowerSwitch.h"
+// Libs
+#include "Utils.h"
+#include "CryptoUtils.h"
 // System libs
 #include <vector>
 #include <cstdlib>
@@ -21,8 +21,7 @@ namespace llvm{
                 this->flag = flag;
             } // 携带flag的构造函数
             PreservedAnalyses run(Function &F, FunctionAnalysisManager &AM);
-            PreservedAnalyses flatten(Function &F);
-            static bool isRequired() { return true; }
+            PreservedAnalyses flatten(Function *F);
     };
     FlatteningPass *createFlattening(bool flag);
 }

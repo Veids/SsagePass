@@ -26,7 +26,7 @@ extern llvm::LLVMContext *CONTEXT;
 using namespace std;
 namespace llvm{
     std::string readAnnotate(Function *f); // 读取llvm.global.annotations中的annotation值
-    void fixStack(Function &F); // 修复PHI指令和逃逸变量
+    void fixStack(Function *F); // 修复PHI指令和逃逸变量
     bool toObfuscate(bool flag, llvm::Function *f, std::string const &attribute); // 判断是否开启混淆
     bool toObfuscateBoolOption(Function *f, std::string option, bool *val);
     bool toObfuscateUint32Option(Function *f, std::string option, uint32_t *val);
