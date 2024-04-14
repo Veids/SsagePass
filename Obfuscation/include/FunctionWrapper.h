@@ -31,7 +31,6 @@ namespace llvm{ // 间接跳转
             } // 携带flag的构造函数
             PreservedAnalyses run(Module &M, ModuleAnalysisManager &AM); // Pass实现函数
             CallSite* HandleCallSite(CallSite *CS); //
-            static bool isRequired() { return true; } // 直接返回true即可
     };
     FunctionWrapperPass *createFunctionWrapper(bool flag); // 创建间接跳转
 }
