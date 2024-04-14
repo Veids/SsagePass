@@ -118,14 +118,6 @@
 //===----------------------------------------------------------------------------------===//
 #include "BogusControlFlow.h"
 
-namespace{
-    using namespace llvm;
-    static BinaryOperator *CreateFNeg(Value *Op, const Twine &Name = "", Instruction *InsertBefore = nullptr){
-        Value *zero = ConstantInt::get(Op->getType(), 0);
-        return BinaryOperator::Create(Instruction::FSub, zero, Op, Name, InsertBefore);
-    }
-} // namespace
-
 namespace {
     static bool OnlyUsedBy(Value *V, Value *Usr) {
         for (User *U : V->users())
@@ -169,17 +161,64 @@ STATISTIC(NumAddedBasicBlocks, "e. Number of added basic blocks in this module")
 STATISTIC(FinalNumBasicBlocks, "f. Final number of basic blocks in this module");
 
 // Options for the pass
-const int defaultObfRate = 70, defaultObfTime = 2;
+static const uint32_t defaultObfRate = 70, defaultObfTime = 1;
 
-static cl::opt<int> ObfProbRate("bcf_prob", cl::desc("Choose the probability [%] each basic blocks will be obfuscated by the -bcf pass"), cl::value_desc("probability rate"), cl::init(defaultObfRate), cl::Optional);
+static cl::opt<uint32_t>
+    ObfProbRate("bcf_prob",
+                cl::desc("Choose the probability [%] each basic blocks will be "
+                         "obfuscated by the -bcf pass"),
+                cl::value_desc("probability rate"), cl::init(defaultObfRate),
+                cl::Optional);
 
-static cl::opt<int> ObfTimes("bcf_loop", cl::desc("Choose how many time the -bcf pass loop on a function"), cl::value_desc("number of times"), cl::init(defaultObfTime), cl::Optional);
+static cl::opt<uint32_t>
+    ObfTimes("bcf_loop",
+             cl::desc("Choose how many time the -bcf pass loop on a function"),
+             cl::value_desc("number of times"), cl::init(defaultObfTime),
+             cl::Optional);
 
-static cl::opt<int> ConditionExpressionComplexity("bcf_cond_compl", cl::desc("The complexity of the expression used to generate branching condition"), cl::value_desc("Complexity"), cl::init(3), cl::Optional);
+static cl::opt<uint32_t> ConditionExpressionComplexity(
+    "bcf_cond_compl",
+    cl::desc("The complexity of the expression used to generate branching "
+             "condition"),
+    cl::value_desc("Complexity"), cl::init(3), cl::Optional);
+static uint32_t ConditionExpressionComplexityTemp = 3;
 
-static Instruction::BinaryOps ops[] = {Instruction::Add, Instruction::Sub, Instruction::And, Instruction::Or, Instruction::Xor};
+static cl::opt<bool>
+    OnlyJunkAssembly("bcf_onlyjunkasm",
+                     cl::desc("only add junk assembly to altered basic block"),
+                     cl::value_desc("only add junk assembly"), cl::init(false),
+                     cl::Optional);
+static bool OnlyJunkAssemblyTemp = false;
 
-static CmpInst::Predicate preds[] = {CmpInst::ICMP_EQ, CmpInst::ICMP_NE, CmpInst::ICMP_UGT, CmpInst::ICMP_UGE, CmpInst::ICMP_ULT, CmpInst::ICMP_ULE};
+static cl::opt<bool> JunkAssembly(
+    "bcf_junkasm",
+    cl::desc("Whether to add junk assembly to altered basic block"),
+    cl::value_desc("add junk assembly"), cl::init(false), cl::Optional);
+static bool JunkAssemblyTemp = false;
+
+static cl::opt<uint32_t> MaxNumberOfJunkAssembly(
+    "bcf_junkasm_maxnum",
+    cl::desc("The maximum number of junk assembliy per altered basic block"),
+    cl::value_desc("max number of junk assembly"), cl::init(4), cl::Optional);
+static uint32_t MaxNumberOfJunkAssemblyTemp = 4;
+
+static cl::opt<uint32_t> MinNumberOfJunkAssembly(
+    "bcf_junkasm_minnum",
+    cl::desc("The minimum number of junk assembliy per altered basic block"),
+    cl::value_desc("min number of junk assembly"), cl::init(2), cl::Optional);
+static uint32_t MinNumberOfJunkAssemblyTemp = 2;
+
+static cl::opt<bool> CreateFunctionForOpaquePredicate(
+    "bcf_createfunc", cl::desc("Create function for each opaque predicate"),
+    cl::value_desc("create function"), cl::init(false), cl::Optional);
+static bool CreateFunctionForOpaquePredicateTemp = false;
+
+static const Instruction::BinaryOps ops[] = {
+    Instruction::Add, Instruction::Sub, Instruction::And, Instruction::Or,
+    Instruction::Xor, Instruction::Mul, Instruction::UDiv};
+static const CmpInst::Predicate preds[] = {
+    CmpInst::ICMP_EQ,  CmpInst::ICMP_NE,  CmpInst::ICMP_UGT,
+    CmpInst::ICMP_UGE, CmpInst::ICMP_ULT, CmpInst::ICMP_ULE};
 
 PreservedAnalyses BogusControlFlowPass::run(Function& F, FunctionAnalysisManager& AM) {
     // Check if the percentage is correct
@@ -197,7 +236,7 @@ PreservedAnalyses BogusControlFlowPass::run(Function& F, FunctionAnalysisManager
     if (toObfuscate(flag, &F, "bcf")){
       outs() << "\033\033[1;32m[BogusControlFlow] Function : " << F.getName() << "\033[0m\n"; // 打印一下被混淆函数的symbol
       bogus(F);                                                            //
-      doF(*F.getParent());                                                 //
+      doF(F);
       return PreservedAnalyses::none();
     }
     return PreservedAnalyses::all();
@@ -207,62 +246,55 @@ PreservedAnalyses BogusControlFlowPass::run(Function& F, FunctionAnalysisManager
 void BogusControlFlowPass::bogus(Function &F) {
     // For statistics and debug
     ++NumFunction;
-    int NumBasicBlocks = 0;
-    bool firstTime = true; // First time we do the loop in this function
-    bool hasBeenModified = false;
-    DEBUG_WITH_TYPE("opt", errs() << "bcf: Started on function " << F.getName() << "\n");
-    DEBUG_WITH_TYPE("opt", errs() << "bcf: Probability rate: " << ObfProbRate << "\n");
-    if (ObfProbRate < 0 || ObfProbRate > 100){
-        DEBUG_WITH_TYPE("opt", errs() << "bcf: Incorrect value," << " probability rate set to default value: " << defaultObfRate << " \n");
-        ObfProbRate = defaultObfRate;
-    }
     NumTimesOnFunctions = ObfTimes;
-    int NumObfTimes = ObfTimes;
+
+    uint32_t NumObfTimes = ObfTimes;
+
     // Real begining of the pass
     // Loop for the number of time we run the pass on the function
     do {
-        DEBUG_WITH_TYPE("cfg", errs() << "bcf: Function " << F.getName() << ", before the pass:\n");
-        DEBUG_WITH_TYPE("cfg", F.viewCFG());
-        // Put all the function's block in a list
-        std::list<BasicBlock *> basicBlocks;
-        for (Function::iterator i = F.begin(); i != F.end(); ++i) {
-            BasicBlock *BB = &*i;
-            if (!BB->isEHPad() && !BB->isLandingPad()) {
-                basicBlocks.push_back(BB);
-            }
+      // Put all the function's block in a list
+      std::list<BasicBlock *> basicBlocks;
+      for (BasicBlock &BB : F)
+        if (!BB.isEHPad() && !BB.isLandingPad() && !containsSwiftError(&BB) &&
+            !containsMustTailCall(&BB) && !containsCoroBeginInst(&BB))
+          basicBlocks.emplace_back(&BB);
+
+      while (!basicBlocks.empty()) {
+        // Basic Blocks' selection
+        if (cryptoutils->get_range(100) <= ObfProbRate) {
+          // Add bogus flow to the given Basic Block (see description)
+          BasicBlock *basicBlock = basicBlocks.front();
+          addBogusFlow(basicBlock, F);
         }
-        DEBUG_WITH_TYPE("gen", errs() << "bcf: Iterating on the Function's Basic Blocks\n");
-        while (!basicBlocks.empty()) {
-            NumBasicBlocks++;
-            // Basic Blocks' selection
-            if ((int)llvm::cryptoutils->get_range(100) <= ObfProbRate) {
-                DEBUG_WITH_TYPE("opt", errs() << "bcf: Block " << NumBasicBlocks << " selected. \n");
-                hasBeenModified = true;
-                ++NumModifiedBasicBlocks;
-                NumAddedBasicBlocks += 3;
-                FinalNumBasicBlocks += 3;
-                // Add bogus flow to the given Basic Block (see description)
-                BasicBlock *basicBlock = basicBlocks.front();
-                addBogusFlow(basicBlock, F);
-            } else {
-                DEBUG_WITH_TYPE("opt", errs() << "bcf: Block " << NumBasicBlocks << " not selected.\n");
-            }
-            // remove the block from the list
-            basicBlocks.pop_front();
-            if (firstTime) { // first time we iterate on this function
-                ++InitNumBasicBlocks;
-                ++FinalNumBasicBlocks;
-            }
-        } // end of while(!basicBlocks.empty())
-        DEBUG_WITH_TYPE("gen", errs() << "bcf: End of function " << F.getName() << "\n");
-        if (hasBeenModified) { // if the function has been modified
-            DEBUG_WITH_TYPE("cfg", errs() << "bcf: Function " << F.getName() << ", after the pass: \n");
-            DEBUG_WITH_TYPE("cfg", F.viewCFG());
-        } else {
-            DEBUG_WITH_TYPE("cfg", errs() << "bcf: Function's not been modified \n");
-        }
-        firstTime = false;
+        // remove the block from the list
+        basicBlocks.pop_front();
+      } // end of while(!basicBlocks.empty())
     } while (--NumObfTimes > 0);
+}
+
+bool BogusControlFlowPass::containsCoroBeginInst(BasicBlock *b) {
+    for (Instruction &I : *b)
+        if (IntrinsicInst *II = dyn_cast<IntrinsicInst>(&I))
+            if (II->getIntrinsicID() == Intrinsic::coro_begin)
+                return true;
+    return false;
+}
+
+bool BogusControlFlowPass::containsMustTailCall(BasicBlock *b) {
+    for (Instruction &I : *b)
+        if (CallInst *CI = dyn_cast<CallInst>(&I))
+            if (CI->isMustTailCall())
+                return true;
+    return false;
+}
+
+bool BogusControlFlowPass::containsSwiftError(BasicBlock *b) {
+    for (Instruction &I : *b)
+        if (AllocaInst *AI = dyn_cast<AllocaInst>(&I))
+            if (AI->isSwiftError())
+                return true;
+    return false;
 }
 
 /* addBogusFlow
@@ -281,76 +313,96 @@ void BogusControlFlowPass::addBogusFlow(BasicBlock *basicBlock, Function &F){
     // part, because they actually are updated in the second part according to
     // them.
     BasicBlock::iterator i1 = basicBlock->begin();
-    if (basicBlock->getFirstNonPHIOrDbgOrLifetime()){
-        i1 = (BasicBlock::iterator)basicBlock->getFirstNonPHIOrDbgOrLifetime();
+    if (basicBlock->getFirstNonPHIOrDbgOrLifetime())
+      i1 = (BasicBlock::iterator)basicBlock->getFirstNonPHIOrDbgOrLifetime();
+
+    // https://github.com/eshard/obfuscator-llvm/commit/85c8719c86bcb4784f5a436e28f3496e91cd6292
+    /* TODO: find a real fix or try with the probe-stack inline-asm when its
+     * ready. See https://github.com/Rust-for-Linux/linux/issues/355. Sometimes
+     * moving an alloca from the entry block to the second block causes a
+     * segfault when using the "probe-stack" attribute (observed with with Rust
+     * programs). To avoid this issue we just split the entry block after the
+     * allocas in this case.
+     */
+    if (F.hasFnAttribute("probe-stack") && basicBlock->isEntryBlock()) {
+      // Find the first non alloca instruction
+      while ((i1 != basicBlock->end()) && isa<AllocaInst>(i1))
+        i1++;
+
+      // If there are no other kind of instruction we just don't split that
+      // entry block
+      if (i1 == basicBlock->end())
+        return;
     }
-    Twine *var;
-    var = new Twine("originalBB");
-    BasicBlock *originalBB = basicBlock->splitBasicBlock(i1, *var);
-    DEBUG_WITH_TYPE("gen", errs() << "bcf: First and original basic blocks: ok\n");
+
+    BasicBlock *originalBB = basicBlock->splitBasicBlock(i1, "originalBB");
+
     // Creating the altered basic block on which the first basicBlock will jump
-    Twine *var3 = new Twine("alteredBB");
-    BasicBlock *alteredBB = createAlteredBasicBlock(originalBB, *var3, &F);
-    DEBUG_WITH_TYPE("gen", errs() << "bcf: Altered basic block: ok\n");
+    BasicBlock *alteredBB =
+        createAlteredBasicBlock(originalBB, "alteredBB", &F);
+
     // Now that all the blocks are created,
     // we modify the terminators to adjust the control flow.
-    alteredBB->getTerminator()->eraseFromParent();
+
+    if (!OnlyJunkAssemblyTemp)
+      alteredBB->getTerminator()->eraseFromParent();
     basicBlock->getTerminator()->eraseFromParent();
-    DEBUG_WITH_TYPE("gen", errs() << "bcf: Terminator removed from the altered" << " and first basic blocks\n");
+
     // Preparing a condition..
     // For now, the condition is an always true comparaison between 2 float
     // This will be complicated after the pass (in doFinalization())
-    Value *LHS = ConstantFP::get(Type::getFloatTy(F.getContext()), 1.0);
-    Value *RHS = ConstantFP::get(Type::getFloatTy(F.getContext()), 1.0);
-    DEBUG_WITH_TYPE("gen", errs() << "bcf: Value LHS and RHS created\n");
+
+    // We need to use ConstantInt instead of ConstantFP as ConstantFP results in
+    // strange dead-loop when injected into Xcode
+    Value *LHS = ConstantInt::get(Type::getInt32Ty(F.getContext()), 1);
+    Value *RHS = ConstantInt::get(Type::getInt32Ty(F.getContext()), 1);
+
     // The always true condition. End of the first block
-    Twine *var4 = new Twine("condition");
-    FCmpInst *condition = new FCmpInst(*basicBlock, FCmpInst::FCMP_TRUE, LHS, RHS, *var4);
-    DEBUG_WITH_TYPE("gen", errs() << "bcf: Always true condition created\n");
+    ICmpInst *condition = new ICmpInst(*basicBlock, ICmpInst::ICMP_EQ, LHS, RHS,
+                                       "BCFPlaceHolderPred");
+    needtoedit.emplace_back(condition);
+
     // Jump to the original basic block if the condition is true or
     // to the altered block if false.
-    BranchInst::Create(originalBB, alteredBB, (Value *)condition, basicBlock);
-    DEBUG_WITH_TYPE("gen", errs() << "bcf: Terminator instruction in first basic block: ok\n");
+    BranchInst::Create(originalBB, alteredBB, condition, basicBlock);
+
     // The altered block loop back on the original one.
     BranchInst::Create(originalBB, alteredBB);
-    DEBUG_WITH_TYPE("gen", errs() << "bcf: Terminator instruction in altered block: ok\n");
+
     // The end of the originalBB is modified to give the impression that
     // sometimes it continues in the loop, and sometimes it return the desired
     // value (of course it's always true, so it always use the original
     // terminator..
     //  but this will be obfuscated too;) )
+
     // iterate on instruction just before the terminator of the originalBB
     BasicBlock::iterator i = originalBB->end();
+
     // Split at this point (we only want the terminator in the second part)
-    Twine *var5 = new Twine("originalBBpart2");
-    BasicBlock *originalBBpart2 = originalBB->splitBasicBlock(--i, *var5);
-    DEBUG_WITH_TYPE("gen", errs() << "bcf: Terminator part of the original basic block" << " is isolated\n");
+    BasicBlock *originalBBpart2 =
+        originalBB->splitBasicBlock(--i, "originalBBpart2");
     // the first part go either on the return statement or on the begining
     // of the altered block.. So we erase the terminator created when splitting.
     originalBB->getTerminator()->eraseFromParent();
     // We add at the end a new always true condition
-    Twine *var6 = new Twine("condition2");
-    FCmpInst *condition2 = new FCmpInst(*originalBB, CmpInst::FCMP_TRUE, LHS, RHS, *var6);
-    // BranchInst::Create(originalBBpart2, alteredBB, (Value
-    // *)condition2,originalBB);  Do random behavior to avoid pattern
-    // recognition This is achieved by jumping to a random BB
-    switch (llvm::cryptoutils->get_uint16_t() % 2) {
-        case 0: {
-            BranchInst::Create(originalBBpart2, originalBB, condition2, originalBB);
-            break;
-        }
-        case 1: {
-            BranchInst::Create(originalBBpart2, alteredBB, condition2, originalBB);
-            break;
-        }
-        default: {
-            BranchInst::Create(originalBBpart2, originalBB, condition2, originalBB);
-            break;
-        }
+    ICmpInst *condition2 = new ICmpInst(*originalBB, CmpInst::ICMP_EQ, LHS, RHS,
+                                        "BCFPlaceHolderPred");
+    needtoedit.emplace_back(condition2);
+    // Do random behavior to avoid pattern recognition.
+    // This is achieved by jumping to a random BB
+    switch (cryptoutils->get_range(2)) {
+    case 0: {
+      BranchInst::Create(originalBBpart2, originalBB, condition2, originalBB);
+      break;
     }
-    DEBUG_WITH_TYPE("gen", errs() << "bcf: Terminator original basic block: ok\n");
-    DEBUG_WITH_TYPE("gen", errs() << "bcf: End of addBogusFlow().\n");
-}
+    case 1: {
+      BranchInst::Create(originalBBpart2, alteredBB, condition2, originalBB);
+      break;
+    }
+    default:
+      llvm_unreachable("wtf?");
+    }
+} // end of addBogusFlow()
 
 /* createAlteredBasicBlock
  *
@@ -362,228 +414,250 @@ void BogusControlFlowPass::addBogusFlow(BasicBlock *basicBlock, Function &F){
  * behave nicely.
  */
 BasicBlock *BogusControlFlowPass::createAlteredBasicBlock(BasicBlock *basicBlock, const Twine &Name = "gen", Function *F = 0) {
-    // Useful to remap the informations concerning instructions.
-    ValueToValueMapTy VMap;
-    BasicBlock *alteredBB = llvm::CloneBasicBlock(basicBlock, VMap, Name, F);
-    DEBUG_WITH_TYPE("gen", errs() << "bcf: Original basic block cloned\n");
-    // Remap operands.
-    BasicBlock::iterator ji = basicBlock->begin();
-    for (BasicBlock::iterator i = alteredBB->begin(), e = alteredBB->end(); i != e; ++i) {
-      // Loop over the operands of the instruction
-      for (User::op_iterator opi = i->op_begin(), ope = i->op_end(); opi != ope; ++opi) {
-        // get the value for the operand
-        Value *v = MapValue(*opi, VMap, RF_None, 0);
-        if (v != 0) {
-          *opi = v;
-          DEBUG_WITH_TYPE("gen", errs() << "bcf: Value's operand has been setted\n");
+    BasicBlock *alteredBB = OnlyJunkAssemblyTemp
+                                ? BasicBlock::Create(F->getContext(), "", F)
+                                : nullptr;
+    if (!OnlyJunkAssemblyTemp) {
+      // Useful to remap the informations concerning instructions.
+      ValueToValueMapTy VMap;
+      alteredBB = CloneBasicBlock(basicBlock, VMap, Name, F);
+      // Remap operands.
+      BasicBlock::iterator ji = basicBlock->begin();
+      for (BasicBlock::iterator i = alteredBB->begin(), e = alteredBB->end();
+           i != e; ++i) {
+        // Loop over the operands of the instruction
+        for (User::op_iterator opi = i->op_begin(), ope = i->op_end();
+             opi != ope; ++opi) {
+          // get the value for the operand
+          Value *v = MapValue(
+              *opi, VMap, RF_NoModuleLevelChanges,
+              0); // https://github.com/eshard/obfuscator-llvm/commit/e8ba79332bd63a3eb38eb85a636951f1cb1f22df
+          if (v != 0)
+            *opi = v;
         }
-      }
-      DEBUG_WITH_TYPE("gen", errs() << "bcf: Operands remapped\n");
-      // Remap phi nodes' incoming blocks.
-      if (PHINode *pn = dyn_cast<PHINode>(i)) {
-        for (unsigned j = 0, e = pn->getNumIncomingValues(); j != e; ++j) {
-          Value *v = MapValue(pn->getIncomingBlock(j), VMap, RF_None, 0);
-          if (v != 0) {
-            pn->setIncomingBlock(j, cast<BasicBlock>(v));
+        // Remap phi nodes' incoming blocks.
+        if (PHINode *pn = dyn_cast<PHINode>(i)) {
+          for (unsigned j = 0, e = pn->getNumIncomingValues(); j != e; ++j) {
+            Value *v = MapValue(pn->getIncomingBlock(j), VMap, RF_None, 0);
+            if (v != 0)
+              pn->setIncomingBlock(j, cast<BasicBlock>(v));
           }
         }
-      }
-      DEBUG_WITH_TYPE("gen", errs() << "bcf: PHINodes remapped\n");
-      // Remap attached metadata.
-      SmallVector<std::pair<unsigned, MDNode *>, 4> MDs;
-      i->getAllMetadata(MDs);
-      DEBUG_WITH_TYPE("gen", errs() << "bcf: Metadatas remapped\n");
-      // important for compiling with DWARF, using option -g.
-      i->setDebugLoc(ji->getDebugLoc());
-      ji++;
-      DEBUG_WITH_TYPE("gen", errs() << "bcf: Debug information location setted\n");
-    } // The instructions' informations are now all correct
-    DEBUG_WITH_TYPE("gen", errs() << "bcf: The cloned basic block is now correct\n");
-    DEBUG_WITH_TYPE("gen", errs() << "bcf: Starting to add junk code in the cloned bloc...\n");
-    // add random instruction in the middle of the bloc. This part can be
-    // improve
-    for (BasicBlock::iterator i = alteredBB->begin(), e = alteredBB->end(); i != e; ++i) {
-      // in the case we find binary operator, we modify slightly this part by
-      // randomly insert some instructions
-      if (i->isBinaryOp()) { // binary instructions
-        unsigned opcode = i->getOpcode();
-        BinaryOperator *op, *op1 = NULL;
-        Twine *var = new Twine("_");
-        // treat differently float or int
-        // Binary int
-        if (opcode == Instruction::Add || opcode == Instruction::Sub ||
-            opcode == Instruction::Mul || opcode == Instruction::UDiv ||
-            opcode == Instruction::SDiv || opcode == Instruction::URem ||
-            opcode == Instruction::SRem || opcode == Instruction::Shl ||
-            opcode == Instruction::LShr || opcode == Instruction::AShr ||
-            opcode == Instruction::And || opcode == Instruction::Or ||
-            opcode == Instruction::Xor) {
-          for (int random = (int)llvm::cryptoutils->get_range(10); random < 10; ++random) {
-            switch (llvm::cryptoutils->get_range(4)) { // to improve
-                case 0:                                    // do nothing
-                    break;
-                case 1:
-                    op = BinaryOperator::CreateNeg(i->getOperand(0), *var, &*i);
-                    op1 = BinaryOperator::Create(Instruction::Add, op, i->getOperand(1), "gen", &*i);
-                    break;
-                case 2:
-                    op1 = BinaryOperator::Create(Instruction::Sub, i->getOperand(0), i->getOperand(1), *var, &*i);
-                    op = BinaryOperator::Create(Instruction::Mul, op1, i->getOperand(1), "gen", &*i);
-                    break;
-                case 3:
-                    op = BinaryOperator::Create(Instruction::Shl, i->getOperand(0), i->getOperand(1), *var, &*i);
-                    break;
+        // Remap attached metadata.
+        SmallVector<std::pair<unsigned, MDNode *>, 4> MDs;
+        i->getAllMetadata(MDs);
+        // important for compiling with DWARF, using option -g.
+        i->setDebugLoc(ji->getDebugLoc());
+        ji++;
+      } // The instructions' informations are now all correct
+
+      // add random instruction in the middle of the bloc. This part can be
+      // improve
+      for (BasicBlock::iterator i = alteredBB->begin(), e = alteredBB->end();
+           i != e; ++i) {
+        // in the case we find binary operator, we modify slightly this part by
+        // randomly insert some instructions
+        if (i->isBinaryOp()) { // binary instructions
+          unsigned int opcode = i->getOpcode();
+          Instruction *op, *op1 = nullptr;
+          Twine *var = new Twine("_");
+          // treat differently float or int
+          // Binary int
+          if (opcode == Instruction::Add || opcode == Instruction::Sub ||
+              opcode == Instruction::Mul || opcode == Instruction::UDiv ||
+              opcode == Instruction::SDiv || opcode == Instruction::URem ||
+              opcode == Instruction::SRem || opcode == Instruction::Shl ||
+              opcode == Instruction::LShr || opcode == Instruction::AShr ||
+              opcode == Instruction::And || opcode == Instruction::Or ||
+              opcode == Instruction::Xor) {
+            for (int random = (int)cryptoutils->get_range(10); random < 10;
+                 ++random) {
+              switch (cryptoutils->get_range(4)) { // to improve
+              case 0:                              // do nothing
+                break;
+              case 1:
+                op = BinaryOperator::CreateNeg(i->getOperand(0), *var, &*i);
+                op1 = BinaryOperator::Create(Instruction::Add, op,
+                                             i->getOperand(1), "gen", &*i);
+                break;
+              case 2:
+                op1 = BinaryOperator::Create(Instruction::Sub, i->getOperand(0),
+                                             i->getOperand(1), *var, &*i);
+                op = BinaryOperator::Create(Instruction::Mul, op1,
+                                            i->getOperand(1), "gen", &*i);
+                break;
+              case 3:
+                op = BinaryOperator::Create(Instruction::Shl, i->getOperand(0),
+                                            i->getOperand(1), *var, &*i);
+                break;
+              }
+            }
+          }
+          // Binary float
+          if (opcode == Instruction::FAdd || opcode == Instruction::FSub ||
+              opcode == Instruction::FMul || opcode == Instruction::FDiv ||
+              opcode == Instruction::FRem) {
+            for (int random = (int)cryptoutils->get_range(10); random < 10;
+                 ++random) {
+              switch (cryptoutils->get_range(3)) { // can be improved
+              case 0:                              // do nothing
+                break;
+              case 1:
+                op = UnaryOperator::CreateFNeg(i->getOperand(0), *var, &*i);
+                op1 = BinaryOperator::Create(Instruction::FAdd, op,
+                                             i->getOperand(1), "gen", &*i);
+                break;
+              case 2:
+                op = BinaryOperator::Create(Instruction::FSub, i->getOperand(0),
+                                            i->getOperand(1), *var, &*i);
+                op1 = BinaryOperator::Create(Instruction::FMul, op,
+                                             i->getOperand(1), "gen", &*i);
+                break;
+              }
+            }
+          }
+          if (opcode == Instruction::ICmp) { // Condition (with int)
+            ICmpInst *currentI = (ICmpInst *)(&i);
+            switch (cryptoutils->get_range(3)) { // must be improved
+            case 0:                              // do nothing
+              break;
+            case 1:
+              currentI->swapOperands();
+              break;
+            case 2: // randomly change the predicate
+              switch (cryptoutils->get_range(10)) {
+              case 0:
+                currentI->setPredicate(ICmpInst::ICMP_EQ);
+                break; // equal
+              case 1:
+                currentI->setPredicate(ICmpInst::ICMP_NE);
+                break; // not equal
+              case 2:
+                currentI->setPredicate(ICmpInst::ICMP_UGT);
+                break; // unsigned greater than
+              case 3:
+                currentI->setPredicate(ICmpInst::ICMP_UGE);
+                break; // unsigned greater or equal
+              case 4:
+                currentI->setPredicate(ICmpInst::ICMP_ULT);
+                break; // unsigned less than
+              case 5:
+                currentI->setPredicate(ICmpInst::ICMP_ULE);
+                break; // unsigned less or equal
+              case 6:
+                currentI->setPredicate(ICmpInst::ICMP_SGT);
+                break; // signed greater than
+              case 7:
+                currentI->setPredicate(ICmpInst::ICMP_SGE);
+                break; // signed greater or equal
+              case 8:
+                currentI->setPredicate(ICmpInst::ICMP_SLT);
+                break; // signed less than
+              case 9:
+                currentI->setPredicate(ICmpInst::ICMP_SLE);
+                break; // signed less or equal
+              }
+              break;
+            }
+          }
+          if (opcode == Instruction::FCmp) { // Conditions (with float)
+            FCmpInst *currentI = (FCmpInst *)(&i);
+            switch (cryptoutils->get_range(3)) { // must be improved
+            case 0:                              // do nothing
+              break;
+            case 1:
+              currentI->swapOperands();
+              break;
+            case 2: // randomly change the predicate
+              switch (cryptoutils->get_range(10)) {
+              case 0:
+                currentI->setPredicate(FCmpInst::FCMP_OEQ);
+                break; // ordered and equal
+              case 1:
+                currentI->setPredicate(FCmpInst::FCMP_ONE);
+                break; // ordered and operands are unequal
+              case 2:
+                currentI->setPredicate(FCmpInst::FCMP_UGT);
+                break; // unordered or greater than
+              case 3:
+                currentI->setPredicate(FCmpInst::FCMP_UGE);
+                break; // unordered, or greater than, or equal
+              case 4:
+                currentI->setPredicate(FCmpInst::FCMP_ULT);
+                break; // unordered or less than
+              case 5:
+                currentI->setPredicate(FCmpInst::FCMP_ULE);
+                break; // unordered, or less than, or equal
+              case 6:
+                currentI->setPredicate(FCmpInst::FCMP_OGT);
+                break; // ordered and greater than
+              case 7:
+                currentI->setPredicate(FCmpInst::FCMP_OGE);
+                break; // ordered and greater than or equal
+              case 8:
+                currentI->setPredicate(FCmpInst::FCMP_OLT);
+                break; // ordered and less than
+              case 9:
+                currentI->setPredicate(FCmpInst::FCMP_OLE);
+                break; // ordered or less than, or equal
+              }
+              break;
             }
           }
         }
-        // Binary float
-        if (opcode == Instruction::FAdd || opcode == Instruction::FSub ||
-            opcode == Instruction::FMul || opcode == Instruction::FDiv ||
-            opcode == Instruction::FRem) {
-          for (int random = (int)llvm::cryptoutils->get_range(10); random < 10;
-               ++random) {
-            switch (llvm::cryptoutils->get_range(3)) { // can be improved
-                case 0:                                    // do nothing
-                    break;
-                case 1:
-                    op = ::CreateFNeg(i->getOperand(0), *var, &*i);
-                    op1 = BinaryOperator::Create(Instruction::FAdd, op, i->getOperand(1), "gen", &*i);
-                    break;
-                case 2:
-                    op = BinaryOperator::Create(Instruction::FSub, i->getOperand(0), i->getOperand(1), *var, &*i);
-                    op1 = BinaryOperator::Create(Instruction::FMul, op, i->getOperand(1), "gen", &*i);
-                    break;
-            }
-          }
-        }
-        if (opcode == Instruction::ICmp) { // Condition (with int)
-          ICmpInst *currentI = (ICmpInst *)(&i);
-          switch (llvm::cryptoutils->get_range(3)) { // must be improved
-            case 0:                                    // do nothing
-                break;
-            case 1:
-                currentI->swapOperands();
-                break;
-            case 2: // randomly change the predicate
-                switch (llvm::cryptoutils->get_range(10)) {
-                    case 0:
-                        currentI->setPredicate(ICmpInst::ICMP_EQ);
-                        break; // equal
-                    case 1:
-                        currentI->setPredicate(ICmpInst::ICMP_NE);
-                        break; // not equal
-                    case 2:
-                        currentI->setPredicate(ICmpInst::ICMP_UGT);
-                        break; // unsigned greater than
-                    case 3:
-                        currentI->setPredicate(ICmpInst::ICMP_UGE);
-                        break; // unsigned greater or equal
-                    case 4:
-                        currentI->setPredicate(ICmpInst::ICMP_ULT);
-                        break; // unsigned less than
-                    case 5:
-                        currentI->setPredicate(ICmpInst::ICMP_ULE);
-                        break; // unsigned less or equal
-                    case 6:
-                        currentI->setPredicate(ICmpInst::ICMP_SGT);
-                        break; // signed greater than
-                    case 7:
-                        currentI->setPredicate(ICmpInst::ICMP_SGE);
-                        break; // signed greater or equal
-                    case 8:
-                        currentI->setPredicate(ICmpInst::ICMP_SLT);
-                        break; // signed less than
-                    case 9:
-                        currentI->setPredicate(ICmpInst::ICMP_SLE);
-                        break; // signed less or equal
-                }
-                break;
-          }
-        }
-        if (opcode == Instruction::FCmp) { // Conditions (with float)
-          FCmpInst *currentI = (FCmpInst *)(&i);
-          switch (llvm::cryptoutils->get_range(3)) { // must be improved
-            case 0:                                    // do nothing
-                break;
-            case 1:
-                currentI->swapOperands();
-                break;
-            case 2: // randomly change the predicate
-                switch (llvm::cryptoutils->get_range(10)) {
-                    case 0:
-                        currentI->setPredicate(FCmpInst::FCMP_OEQ);
-                        break; // ordered and equal
-                    case 1:
-                        currentI->setPredicate(FCmpInst::FCMP_ONE);
-                        break; // ordered and operands are unequal
-                    case 2:
-                        currentI->setPredicate(FCmpInst::FCMP_UGT);
-                        break; // unordered or greater than
-                    case 3:
-                        currentI->setPredicate(FCmpInst::FCMP_UGE);
-                        break; // unordered, or greater than, or equal
-                    case 4:
-                        currentI->setPredicate(FCmpInst::FCMP_ULT);
-                        break; // unordered or less than
-                    case 5:
-                        currentI->setPredicate(FCmpInst::FCMP_ULE);
-                        break; // unordered, or less than, or equal
-                    case 6:
-                        currentI->setPredicate(FCmpInst::FCMP_OGT);
-                        break; // ordered and greater than
-                    case 7:
-                        currentI->setPredicate(FCmpInst::FCMP_OGE);
-                        break; // ordered and greater than or equal
-                    case 8:
-                        currentI->setPredicate(FCmpInst::FCMP_OLT);
-                        break; // ordered and less than
-                    case 9:
-                        currentI->setPredicate(FCmpInst::FCMP_OLE);
-                        break; // ordered or less than, or equal
-                }
-                break;
-          }
+      }
+      // Remove DIs from AlterBB
+      SmallVector<CallInst *, 4> toRemove;
+      SmallVector<Constant *, 4> DeadConstants;
+      for (Instruction &I : *alteredBB) {
+        if (CallInst *CI = dyn_cast<CallInst>(&I)) {
+          if (CI->getCalledFunction() != nullptr &&
+              CI->getCalledFunction()->getName().startswith("llvm.dbg"))
+            toRemove.emplace_back(CI);
         }
       }
-    }
-    // Remove DIs from AlterBB
-    vector<CallInst *> toRemove;
-    vector<Constant*> DeadConstants;
-    for (Instruction &I : *alteredBB) {
-      if (CallInst *CI = dyn_cast<CallInst>(&I)) {
-        if (CI->getCalledFunction() != nullptr &&
-            CI->getCalledFunction()->getName().startswith("llvm.dbg")) {
-          toRemove.push_back(CI);
+      // Shamefully stolen from IPO/StripSymbols.cpp
+      for (CallInst *CI : toRemove) {
+        Value *Arg1 = CI->getArgOperand(0);
+        Value *Arg2 = CI->getArgOperand(1);
+        assert(CI->use_empty() && "llvm.dbg intrinsic should have void result");
+        CI->eraseFromParent();
+        if (Arg1->use_empty()) {
+          if (Constant *C = dyn_cast<Constant>(Arg1))
+            DeadConstants.emplace_back(C);
+          else
+            RecursivelyDeleteTriviallyDeadInstructions(Arg1);
         }
+        if (Arg2->use_empty())
+          if (Constant *C = dyn_cast<Constant>(Arg2))
+            DeadConstants.emplace_back(C);
       }
-    }
-    // Shamefully stolen from IPO/StripSymbols.cpp
-    for (CallInst *CI : toRemove) {
-      Value *Arg1 = CI->getArgOperand(0);
-      Value *Arg2 = CI->getArgOperand(1);
-      assert(CI->use_empty() && "llvm.dbg intrinsic should have void result");
-      CI->eraseFromParent();
-      if (Arg1->use_empty()) {
-        if (Constant *C = dyn_cast<Constant>(Arg1)) {
-          DeadConstants.push_back(C);
+      while (!DeadConstants.empty()) {
+        Constant *C = DeadConstants.back();
+        DeadConstants.pop_back();
+        if (GlobalVariable *GV = dyn_cast<GlobalVariable>(C)) {
+          if (GV->hasLocalLinkage())
+            RemoveDeadConstant(GV);
         } else {
-          RecursivelyDeleteTriviallyDeadInstructions(Arg1);
-        }
-      }
-      if (Arg2->use_empty()) {
-        if (Constant *C = dyn_cast<Constant>(Arg2)) {
-          DeadConstants.push_back(C);
+          RemoveDeadConstant(C);
         }
       }
     }
-    while (!DeadConstants.empty()) {
-      Constant *C = DeadConstants.back();
-      DeadConstants.pop_back();
-      if (GlobalVariable *GV = dyn_cast<GlobalVariable>(C)) {
-        if (GV->hasLocalLinkage())
-          RemoveDeadConstant(GV);
-      } else
-        RemoveDeadConstant(C);
+    if (JunkAssemblyTemp || OnlyJunkAssemblyTemp) {
+      std::string junk = "";
+      for (uint32_t i = cryptoutils->get_range(MinNumberOfJunkAssemblyTemp,
+                                               MaxNumberOfJunkAssemblyTemp);
+           i > 0; i--)
+        junk += ".long " + std::to_string(cryptoutils->get_uint32_t()) + "\n";
+      InlineAsm *IA = InlineAsm::get(
+          FunctionType::get(Type::getVoidTy(alteredBB->getContext()), false),
+          junk, "", true, false);
+      if (OnlyJunkAssemblyTemp)
+        CallInst::Create(IA, {}, "", alteredBB);
+      else
+        CallInst::Create(IA, {}, "",
+                         alteredBB->getFirstNonPHIOrDbgOrLifetime());
+      turnOffOptimization(basicBlock->getParent());
     }
     return alteredBB;
 }
@@ -595,105 +669,130 @@ BasicBlock *BogusControlFlowPass::createAlteredBasicBlock(BasicBlock *basicBlock
  * More precisely, the condition which predicate is FCMP_TRUE.
  * It also remove all the functions' basic blocks' and instructions' names.
  */
-bool BogusControlFlowPass::doF(Module &M) {
-    DEBUG_WITH_TYPE("gen", errs() << "bcf: Starting doFinalization...\n");
-    std::vector<Instruction *> toEdit, toDelete;
-    // BinaryOperator *op, *op1 = NULL;
-    // ICmpInst *condition, *condition2;
+bool BogusControlFlowPass::doF(Function &F) {
+    if (!toObfuscateBoolOption(&F, "bcf_createfunc",
+                               &CreateFunctionForOpaquePredicateTemp))
+      CreateFunctionForOpaquePredicateTemp = CreateFunctionForOpaquePredicate;
+    if (!toObfuscateUint32Option(&F, "bcf_cond_compl",
+                                 &ConditionExpressionComplexityTemp))
+      ConditionExpressionComplexityTemp = ConditionExpressionComplexity;
+
+    SmallVector<Instruction *, 8> toEdit, toDelete;
     // Looking for the conditions and branches to transform
-    for (Module::iterator mi = M.begin(), me = M.end(); mi != me; ++mi) {
-      for (Function::iterator fi = mi->begin(), fe = mi->end(); fi != fe; ++fi) {
-        // fi->setName("");
-        Instruction *tbb = fi->getTerminator();
-        if (tbb->getOpcode() == Instruction::Br) {
-          BranchInst *br = (BranchInst *)(tbb);
-          if (br->isConditional()) {
-            FCmpInst *cond = (FCmpInst *)br->getCondition();
-            unsigned opcode = cond->getOpcode();
-            if (opcode == Instruction::FCmp) {
-              if (cond->getPredicate() == FCmpInst::FCMP_TRUE) {
-                DEBUG_WITH_TYPE("gen", errs() << "bcf: an always true predicate !\n");
-                toDelete.push_back(cond); // The condition
-                toEdit.push_back(tbb);    // The branch using the condition
-              }
-            }
+    for (BasicBlock &BB : F) {
+      Instruction *tbb = BB.getTerminator();
+      if (BranchInst *br = dyn_cast<BranchInst>(tbb)) {
+        if (br->isConditional()) {
+          ICmpInst *cond = dyn_cast<ICmpInst>(br->getCondition());
+          if (cond && std::find(needtoedit.begin(), needtoedit.end(), cond) !=
+                          needtoedit.end()) {
+            toDelete.emplace_back(cond); // The condition
+            toEdit.emplace_back(tbb);    // The branch using the condition
           }
         }
-        /*
-        for (BasicBlock::iterator bi = fi->begin(), be = fi->end() ; bi != be;
-        ++bi){ bi->setName(""); // setting the basic blocks' names
-        }
-        */
       }
     }
+    Module &M = *F.getParent();
+    Type *I1Ty = Type::getInt1Ty(M.getContext());
+    Type *I32Ty = Type::getInt32Ty(M.getContext());
     // Replacing all the branches we found
-    for (std::vector<Instruction *>::iterator i = toEdit.begin();
-         i != toEdit.end(); ++i) {
+    for (Instruction *i : toEdit) {
       // Previously We Use LLVM EE To Calculate LHS and RHS
       // Since IRBuilder<> uses ConstantFolding to fold constants.
       // The return instruction is already returning constants
       // The variable names below are the artifact from the Emulation Era
-      Type *I32Ty = Type::getInt32Ty(M.getContext());
-      Module emuModule("HikariBCFEmulator", M.getContext());
-      emuModule.setDataLayout(M.getDataLayout());
-      emuModule.setTargetTriple(M.getTargetTriple());
-      Function *emuFunction = Function::Create(FunctionType::get(I32Ty, false), GlobalValue::LinkageTypes::PrivateLinkage, "BeginExecution", &emuModule);
-      BasicBlock *EntryBlock = BasicBlock::Create(M.getContext(), "", emuFunction);
-      Instruction *tmp = &*((*i)->getParent()->getFirstInsertionPt());
-      IRBuilder<> IRBReal(tmp);
-      IRBuilder<> IRBEmu(EntryBlock);
+      Function *emuFunction = Function::Create(
+          FunctionType::get(I32Ty, false),
+          GlobalValue::LinkageTypes::PrivateLinkage, "HikariBCFEmuFunction", M);
+      BasicBlock *emuEntryBlock =
+          BasicBlock::Create(emuFunction->getContext(), "", emuFunction);
+
+      Function *opFunction = nullptr;
+      IRBuilder<> *IRBOp = nullptr;
+      if (CreateFunctionForOpaquePredicateTemp) {
+        opFunction = Function::Create(FunctionType::get(I1Ty, false),
+                                      GlobalValue::LinkageTypes::PrivateLinkage,
+                                      "HikariBCFOpaquePredicateFunction", M);
+        BasicBlock *opTrampBlock =
+            BasicBlock::Create(opFunction->getContext(), "", opFunction);
+        BasicBlock *opEntryBlock =
+            BasicBlock::Create(opFunction->getContext(), "", opFunction);
+        // Insert a br to make it can be obfuscated by IndirectBranch
+        BranchInst::Create(opEntryBlock, opTrampBlock);
+        writeAnnotationMetadata(opFunction, "bcfopfunc");
+        IRBOp = new IRBuilder<>(opEntryBlock);
+      }
+      Instruction *tmp = &*(i->getParent()->getFirstNonPHIOrDbgOrLifetime());
+      IRBuilder<> *IRBReal = new IRBuilder<>(tmp);
+      IRBuilder<> IRBEmu(emuEntryBlock);
       // First,Construct a real RHS that will be used in the actual condition
       Constant *RealRHS = ConstantInt::get(I32Ty, cryptoutils->get_uint32_t());
       // Prepare Initial LHS and RHS to bootstrap the emulator
-      Constant *LHSC = ConstantInt::get(I32Ty, cryptoutils->get_uint32_t());
-      Constant *RHSC = ConstantInt::get(I32Ty, cryptoutils->get_uint32_t());
-      GlobalVariable *LHSGV = new GlobalVariable(M, Type::getInt32Ty(M.getContext()), false, GlobalValue::PrivateLinkage, LHSC, "LHSGV");
-      GlobalVariable *RHSGV = new GlobalVariable(M, Type::getInt32Ty(M.getContext()), false, GlobalValue::PrivateLinkage, RHSC, "RHSGV");
-      LoadInst *LHS = IRBReal.CreateLoad(LHSGV->getValueType(), LHSGV, "Initial LHS");
-      LoadInst *RHS = IRBReal.CreateLoad(RHSGV->getValueType(), RHSGV, "Initial LHS");
+      Constant *LHSC =
+          ConstantInt::get(I32Ty, cryptoutils->get_range(1, UINT32_MAX));
+      Constant *RHSC =
+          ConstantInt::get(I32Ty, cryptoutils->get_range(1, UINT32_MAX));
+      GlobalVariable *LHSGV =
+          new GlobalVariable(M, Type::getInt32Ty(M.getContext()), false,
+                             GlobalValue::PrivateLinkage, LHSC, "LHSGV");
+      GlobalVariable *RHSGV =
+          new GlobalVariable(M, Type::getInt32Ty(M.getContext()), false,
+                             GlobalValue::PrivateLinkage, RHSC, "RHSGV");
+      LoadInst *LHS =
+          (CreateFunctionForOpaquePredicateTemp ? IRBOp : IRBReal)
+              ->CreateLoad(LHSGV->getValueType(), LHSGV, "Initial LHS");
+      LoadInst *RHS =
+          (CreateFunctionForOpaquePredicateTemp ? IRBOp : IRBReal)
+              ->CreateLoad(RHSGV->getValueType(), RHSGV, "Initial LHS");
+
       // To Speed-Up Evaluation
       Value *emuLHS = LHSC;
       Value *emuRHS = RHSC;
-      Instruction::BinaryOps initialOp = ops[llvm::cryptoutils->get_uint32_t() % (sizeof(ops) / sizeof(ops[0]))];
-      Value *emuLast = IRBEmu.CreateBinOp(initialOp, emuLHS, emuRHS, "EmuInitialCondition");
-      Value *Last = IRBReal.CreateBinOp(initialOp, LHS, RHS, "InitialCondition");
-      for (int i = 0; i < ConditionExpressionComplexity; i++) {
-        Constant *newTmp = ConstantInt::get(I32Ty, cryptoutils->get_uint32_t());
-        Instruction::BinaryOps initialOp = ops[llvm::cryptoutils->get_uint32_t() % (sizeof(ops) / sizeof(ops[0]))];
-        emuLast = IRBEmu.CreateBinOp(initialOp, emuLast, newTmp, "EmuInitialCondition");
-        Last = IRBReal.CreateBinOp(initialOp, Last, newTmp, "InitialCondition");
+      Instruction::BinaryOps initialOp =
+          ops[cryptoutils->get_range(sizeof(ops) / sizeof(ops[0]))];
+      Value *emuLast =
+          IRBEmu.CreateBinOp(initialOp, emuLHS, emuRHS, "EmuInitialCondition");
+      Value *Last = (CreateFunctionForOpaquePredicateTemp ? IRBOp : IRBReal)
+                        ->CreateBinOp(initialOp, LHS, RHS, "InitialCondition");
+      for (uint32_t i = 0; i < ConditionExpressionComplexityTemp; i++) {
+        Constant *newTmp =
+            ConstantInt::get(I32Ty, cryptoutils->get_range(1, UINT32_MAX));
+        Instruction::BinaryOps initialOp2 =
+            ops[cryptoutils->get_range(sizeof(ops) / sizeof(ops[0]))];
+        emuLast = IRBEmu.CreateBinOp(initialOp2, emuLast, newTmp,
+                                     "EmuInitialCondition");
+        Last = (CreateFunctionForOpaquePredicateTemp ? IRBOp : IRBReal)
+                   ->CreateBinOp(initialOp2, Last, newTmp, "InitialCondition");
       }
       // Randomly Generate Predicate
-      CmpInst::Predicate pred = preds[llvm::cryptoutils->get_uint32_t() % (sizeof(preds) / sizeof(preds[0]))];
-      Last = IRBReal.CreateICmp(pred, Last, RealRHS);
+      CmpInst::Predicate pred =
+          preds[cryptoutils->get_range(sizeof(preds) / sizeof(preds[0]))];
+      if (CreateFunctionForOpaquePredicateTemp) {
+        IRBOp->CreateRet(IRBOp->CreateICmp(pred, Last, RealRHS));
+        Last = IRBReal->CreateCall(opFunction);
+      } else
+        Last = IRBReal->CreateICmp(pred, Last, RealRHS);
       emuLast = IRBEmu.CreateICmp(pred, emuLast, RealRHS);
       ReturnInst *RI = IRBEmu.CreateRet(emuLast);
       ConstantInt *emuCI = cast<ConstantInt>(RI->getReturnValue());
-      uint64_t emulateResult = emuCI->getZExtValue();
-      vector<BasicBlock *> BBs; // Start To Prepare IndirectBranching
+      APInt emulateResult = emuCI->getValue();
       if (emulateResult == 1) {
         // Our ConstantExpr evaluates to true;
-        BranchInst::Create(((BranchInst *)*i)->getSuccessor(0), ((BranchInst *)*i)->getSuccessor(1), (Value *)Last, ((BranchInst *)*i)->getParent());
+        BranchInst::Create(((BranchInst *)i)->getSuccessor(0),
+                           ((BranchInst *)i)->getSuccessor(1), Last,
+                           i->getParent());
       } else {
         // False, swap operands
-        BranchInst::Create(((BranchInst *)*i)->getSuccessor(1), ((BranchInst *)*i)->getSuccessor(0), (Value *)Last, ((BranchInst *)*i)->getParent());
+        BranchInst::Create(((BranchInst *)i)->getSuccessor(1),
+                           ((BranchInst *)i)->getSuccessor(0), Last,
+                           i->getParent());
       }
-      EntryBlock->eraseFromParent();
       emuFunction->eraseFromParent();
-      DEBUG_WITH_TYPE("gen", errs() << "bcf: Erase branch instruction:" << *((BranchInst *)*i) << "\n");
-      (*i)->eraseFromParent(); // erase the branch
+      i->eraseFromParent(); // erase the branch
     }
     // Erase all the associated conditions we found
-    for (std::vector<Instruction *>::iterator i = toDelete.begin(); i != toDelete.end(); ++i) {
-      DEBUG_WITH_TYPE("gen", errs() << "bcf: Erase condition instruction:" << *((Instruction *)*i) << "\n");
-      (*i)->eraseFromParent();
-    }
-    // Only for debug
-    DEBUG_WITH_TYPE("cfg", errs() << "bcf: End of the pass, here are the graphs after doFinalization\n");
-    for (Module::iterator mi = M.begin(), me = M.end(); mi != me; ++mi) {
-      DEBUG_WITH_TYPE("cfg", errs() << "bcf: Function " << mi->getName() << "\n");
-      DEBUG_WITH_TYPE("cfg", mi->viewCFG());
-    }
+    for (Instruction *i : toDelete)
+      i->eraseFromParent();
     return true;
 }
 

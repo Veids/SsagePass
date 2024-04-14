@@ -13,6 +13,7 @@
 #include "HikariStringEncryption.h"
 #include "llvm/Passes/PassBuilder.h"
 #include "llvm/Passes/PassPlugin.h"
+#include "CryptoUtils.h"
 
 using namespace llvm;
 
@@ -50,6 +51,8 @@ std::vector<std::string_view> SplitString(const std::string_view str, const char
  * @return llvm::PassPluginLibraryInfo 
  */
 llvm::PassPluginLibraryInfo getSsagePluginInfo() {
+  cryptoutils->prng_seed();
+
   return {
     LLVM_PLUGIN_API_VERSION, "Ssage", LLVM_VERSION_STRING,
         [](PassBuilder &PB) {

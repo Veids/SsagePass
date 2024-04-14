@@ -1,3 +1,4 @@
+//https://github.com/61bcdefg/Hikari-LLVM15-Core/blob/0ba1c7bdfac5c8f41623ea48bcc7fc3b1b40f0d9/Utils.cpp
 /**
  * @file Utils.cpp
  * @author SsageParuders
@@ -16,216 +17,99 @@ using std::vector;
 
 LLVMContext *CONTEXT = nullptr;
 
-/**
- * @brief 参考资料:https://www.jianshu.com/p/0567346fd5e8
- *        作用是读取llvm.global.annotations中的annotation值 从而实现过滤函数 只对单独某功能开启PASS
- * @param f
- * @return std::string
- */
-std::string llvm::readAnnotate(Function *f){ //取自原版ollvm项目
-    std::string annotation = "";
-    /* Get annotation variable */
-    GlobalVariable *glob=f->getParent()->getGlobalVariable( "llvm.global.annotations" );
-    if ( glob != NULL ){
-        /* Get the array */
-        if ( ConstantArray * ca = dyn_cast<ConstantArray>( glob->getInitializer() ) ){
-            for ( unsigned i = 0; i < ca->getNumOperands(); ++i ){
-                /* Get the struct */
-                if ( ConstantStruct * structAn = dyn_cast<ConstantStruct>( ca->getOperand( i ) ) ){
-                    if ( ConstantExpr * expr = dyn_cast<ConstantExpr>( structAn->getOperand( 0 ) ) ){
-                        /*
-                         * If it's a bitcast we can check if the annotation is concerning
-                         * the current function
-                         */
-                        if ( expr->getOpcode() == Instruction::BitCast && expr->getOperand( 0 ) == f ){
-                            ConstantExpr *note = cast<ConstantExpr>( structAn->getOperand( 1 ) );
-                            /*
-                             * If it's a GetElementPtr, that means we found the variable
-                             * containing the annotations
-                             */
-                            if ( note->getOpcode() == Instruction::GetElementPtr ){
-                                if ( GlobalVariable * annoteStr = dyn_cast<GlobalVariable>( note->getOperand( 0 ) ) ){
-                                    if ( ConstantDataSequential * data = dyn_cast<ConstantDataSequential>( annoteStr->getInitializer() ) ){
-                                        if ( data->isString() ){
-                                            annotation += data->getAsString().lower() + " ";
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-    return(annotation);
-}
-
-/**
- * @brief 用于判断是否开启混淆
- * 
- * @param flag 
- * @param f 
- * @param attribute 
- * @return true 
- * @return false 
- */
-bool llvm::toObfuscate(bool flag, Function *f, std::string const &attribute) { //取自原版ollvm项目
-    std::string attr = attribute;
-    std::string attrNo = "no" + attr;
-    // Check if declaration
-    if (f->isDeclaration()) {
-        return false;
-    }
-    // Check external linkage
-    if (f->hasAvailableExternallyLinkage() != 0) {
-        return false;
-    }
-    // We have to check the nofla flag first
-    // Because .find("fla") is true for a string like "fla" or
-    // "nofla"
-    if (readAnnotate(f).find(attrNo) != std::string::npos) { // 是否禁止开启XXX
-        return false;
-    }
-    // If fla annotations
-    if (readAnnotate(f).find(attr) != std::string::npos) { // 是否开启XXX
-        return true;
-    }
-    // If fla flag is set
-    if (flag == true) { // 开启PASS
-        return true;
-    }
-    return false;
-}
-
-/**
- * @brief 修复PHI指令和逃逸变量
- * 
- * @param F 
- */
-void llvm::fixStack(Function &F) {
-    vector<PHINode*> origPHI;
-    vector<Instruction*> origReg;
-    BasicBlock &entryBB = F.getEntryBlock();
-    for(BasicBlock &BB : F){
-        for(Instruction &I : BB){
-            if(PHINode *PN = dyn_cast<PHINode>(&I)){
-                origPHI.push_back(PN);
-            }else if(!(isa<AllocaInst>(&I) && I.getParent() == &entryBB) 
-                && I.isUsedOutsideOfBlock(&BB)){
-                origReg.push_back(&I);
-            }
-        }
-    }
-    for(PHINode *PN : origPHI){
-        DemotePHIToStack(PN, entryBB.getTerminator());
-    }
-    for(Instruction *I : origReg){
-        DemoteRegToStack(*I, entryBB.getTerminator());
-    }
-}
-
-/**
- * @brief 
- * 
- * @param Func 
- */
-void llvm::FixFunctionConstantExpr(Function *Func) {
-  // Replace ConstantExpr with equal instructions
-  // Otherwise replacing on Constant will crash the compiler
-  for (BasicBlock &BB : *Func) {
-    FixBasicBlockConstantExpr(&BB);
-  }
-}
-/**
- * @brief 
- * 
- * @param BB 
- */
-void llvm::FixBasicBlockConstantExpr(BasicBlock *BB) {
-  // Replace ConstantExpr with equal instructions
-  // Otherwise replacing on Constant will crash the compiler
-  // Things to note:
-  // - Phis must be placed at BB start so CEs must be placed prior to current BB
-  assert(!BB->empty() && "BasicBlock is empty!");
-  assert((BB->getParent() != NULL) && "BasicBlock must be in a Function!");
-  Instruction *FunctionInsertPt = &*(BB->getParent()->getEntryBlock().getFirstInsertionPt());
-  // Instruction* LocalBBInsertPt=&*(BB.getFirstInsertionPt());
-  for (Instruction &I : *BB) {
-    if (isa<LandingPadInst>(I) || isa<FuncletPadInst>(I)) {
-        continue;
-    }
-    for (unsigned i = 0; i < I.getNumOperands(); i++) {
-      if (ConstantExpr *C = dyn_cast<ConstantExpr>(I.getOperand(i))) {
-        Instruction *InsertPt = &I;
-        IRBuilder<NoFolder> IRB(InsertPt);
-        if (isa<PHINode>(I)) {
-          IRB.SetInsertPoint(FunctionInsertPt);
-        }
-        Instruction *Inst = IRB.Insert(C->getAsInstruction());
-        I.setOperand(i, Inst);
-      }
-    }
-  }
-}
-
-/**
- * @brief 随机字符串
- * 
- * @param len 
- * @return string 
- */
-string llvm::rand_str(int len){
-    string str;
-    char c = 'O';
-    int idx;
-    for (idx = 0; idx < len; idx++){
-        
-        switch ((rand() % 3)){
-            case 1:
-                c = 'O';
-                break;
-            case 2:
-                c = '0';
-                break;
-            default:
-                c = 'o';
-                break;
-		}
-        str.push_back(c);
-    }
-    return str;
-}
-
-bool llvm::AreUsersInOneFunction(GlobalVariable *GV) {
-  std::set<Function *> userFunctions;
-  for (User *U : GV->users()) {
-    if (Instruction *I = dyn_cast<Instruction>(U)) {
-      userFunctions.insert(I->getFunction());
-    } else if (ConstantExpr *CE = dyn_cast<ConstantExpr>(U)) {
-      for (User *U2 : CE->users()) {
-        if (Instruction *I = dyn_cast<Instruction>(U2)) {
-          userFunctions.insert(I->getFunction());
-        }
-      }
-    } else {
-      return false;
-    }
-  }
-  return userFunctions.size() <= 1;
-}
-
-bool llvm::hasApplePtrauth(Module *M) {
-  for (GlobalVariable &GV : M->globals())
-    if (GV.getSection() == "llvm.ptrauth")
+// Shamefully borrowed from ../Scalar/RegToMem.cpp :(
+bool valueEscapes(Instruction *Inst) {
+  BasicBlock *BB = Inst->getParent();
+  for (Value::use_iterator UI = Inst->use_begin(), E = Inst->use_end(); UI != E;
+       ++UI) {
+    Instruction *I = cast<Instruction>(*UI);
+    if (I->getParent() != BB || isa<PHINode>(I)) {
       return true;
+    }
+  }
   return false;
 }
 
-bool llvm::toObfuscateUint32Option(Function *f, std::string option, uint32_t *val) {
-  if (llvm::readAnnotationMetadataUint32OptVal(f, option, val) ||
-      llvm::readFlagUint32OptVal(f, option, val))
+void fixStack(Function *f) {
+  // Try to remove phi node and demote reg to stack
+  SmallVector<PHINode *, 8> tmpPhi;
+  SmallVector<Instruction *, 32> tmpReg;
+  BasicBlock *bbEntry = &*f->begin();
+  // Find first non-alloca instruction and create insertion point. This is
+  // safe if block is well-formed: it always have terminator, otherwise
+  // we'll get and assertion.
+  BasicBlock::iterator I = bbEntry->begin();
+  while (isa<AllocaInst>(I))
+    ++I;
+  Instruction *AllocaInsertionPoint = &*I;
+  do {
+    tmpPhi.clear();
+    tmpReg.clear();
+    for (BasicBlock &i : *f) {
+      for (Instruction &j : i) {
+        if (isa<PHINode>(&j)) {
+          PHINode *phi = cast<PHINode>(&j);
+          tmpPhi.emplace_back(phi);
+          continue;
+        }
+        if (!(isa<AllocaInst>(&j) && j.getParent() == bbEntry) &&
+            (valueEscapes(&j) || j.isUsedOutsideOfBlock(&i))) {
+          tmpReg.emplace_back(&j);
+          continue;
+        }
+      }
+    }
+    for (Instruction *I : tmpReg)
+      DemoteRegToStack(*I, false, AllocaInsertionPoint);
+    for (PHINode *P : tmpPhi)
+      DemotePHIToStack(P, AllocaInsertionPoint);
+  } while (tmpReg.size() != 0 || tmpPhi.size() != 0);
+}
+
+// Unlike O-LLVM which uses __attribute__ that is not supported by the ObjC
+// CFE. We use a dummy call here and remove the call later Very dumb and
+// definitely slower than the function attribute method Merely a hack
+bool readFlag(Function *f, std::string attribute) {
+  for (Instruction &I : instructions(f)) {
+    Instruction *Inst = &I;
+    if (CallInst *CI = dyn_cast<CallInst>(Inst)) {
+      if (CI->getCalledFunction() != nullptr &&
+          CI->getCalledFunction()->getName().contains("hikari_" + attribute)) {
+        CI->eraseFromParent();
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+bool llvm::toObfuscate(bool flag, Function *f, std::string const &attribute) { //取自原版ollvm项目
+    // Check if declaration and external linkage
+    if (f->isDeclaration() || f->hasAvailableExternallyLinkage()) {
+        return false;
+    }
+    std::string attr = attribute;
+    std::string attrNo = "no" + attr;
+    if (readAnnotationMetadata(f, attrNo) || readFlag(f, attrNo)) {
+        return false;
+    }
+    if (readAnnotationMetadata(f, attr) || readFlag(f, attr)) {
+        return true;
+    }
+    return flag;
+}
+
+bool llvm::toObfuscateBoolOption(Function *f, std::string option, bool *val) {
+  std::string opt = option;
+  std::string optDisable = "no" + option;
+  if (readAnnotationMetadata(f, optDisable) || readFlag(f, optDisable)) {
+    *val = false;
     return true;
+  }
+  if (readAnnotationMetadata(f, opt) || readFlag(f, opt)) {
+    *val = true;
+    return true;
+  }
   return false;
 }
 
@@ -261,4 +145,114 @@ bool llvm::readFlagUint32OptVal(Function *f, std::string opt, uint32_t *val) {
     }
   }
   return false;
+}
+
+bool llvm::toObfuscateUint32Option(Function *f, std::string option, uint32_t *val) {
+  if (llvm::readAnnotationMetadataUint32OptVal(f, option, val) ||
+      llvm::readFlagUint32OptVal(f, option, val))
+    return true;
+  return false;
+}
+
+bool llvm::hasApplePtrauth(Module *M) {
+  for (GlobalVariable &GV : M->globals())
+    if (GV.getSection() == "llvm.ptrauth")
+      return true;
+  return false;
+}
+
+void llvm::FixBasicBlockConstantExpr(BasicBlock *BB) {
+  // Replace ConstantExpr with equal instructions
+  // Otherwise replacing on Constant will crash the compiler
+  // Things to note:
+  // - Phis must be placed at BB start so CEs must be placed prior to current BB
+  assert(!BB->empty() && "BasicBlock is empty!");
+  assert((BB->getParent() != NULL) && "BasicBlock must be in a Function!");
+  Instruction *FunctionInsertPt = &*(BB->getParent()->getEntryBlock().getFirstInsertionPt());
+  // Instruction* LocalBBInsertPt=&*(BB.getFirstInsertionPt());
+  for (Instruction &I : *BB) {
+    if (isa<LandingPadInst>(I) || isa<FuncletPadInst>(I)) {
+        continue;
+    }
+    for (unsigned i = 0; i < I.getNumOperands(); i++) {
+      if (ConstantExpr *C = dyn_cast<ConstantExpr>(I.getOperand(i))) {
+        Instruction *InsertPt = &I;
+        IRBuilder<NoFolder> IRB(InsertPt);
+        if (isa<PHINode>(I)) {
+          IRB.SetInsertPoint(FunctionInsertPt);
+        }
+        Instruction *Inst = IRB.Insert(C->getAsInstruction());
+        I.setOperand(i, Inst);
+      }
+    }
+  }
+}
+
+void llvm::FixFunctionConstantExpr(Function *Func) {
+  // Replace ConstantExpr with equal instructions
+  // Otherwise replacing on Constant will crash the compiler
+  for (BasicBlock &BB : *Func) {
+    FixBasicBlockConstantExpr(&BB);
+  }
+}
+
+void llvm::turnOffOptimization(Function *f) {
+  f->removeFnAttr(Attribute::AttrKind::MinSize);
+  f->removeFnAttr(Attribute::AttrKind::OptimizeForSize);
+  if (!f->hasFnAttribute(Attribute::AttrKind::OptimizeNone) &&
+      !f->hasFnAttribute(Attribute::AttrKind::AlwaysInline)) {
+    f->addFnAttr(Attribute::AttrKind::OptimizeNone);
+    f->addFnAttr(Attribute::AttrKind::NoInline);
+  }
+}
+
+bool llvm::readAnnotationMetadata(Function *f, std::string annotation) {
+  MDNode *Existing = f->getMetadata(obfkindid);
+  if (Existing) {
+    MDTuple *Tuple = cast<MDTuple>(Existing);
+    for (auto &N : Tuple->operands())
+      if (cast<MDString>(N.get())->getString() == annotation)
+        return true;
+  }
+  return false;
+}
+
+void llvm::writeAnnotationMetadata(Function *f, std::string annotation) {
+  LLVMContext &Context = f->getContext();
+  MDBuilder MDB(Context);
+
+  MDNode *Existing = f->getMetadata(obfkindid);
+  SmallVector<Metadata *, 4> Names;
+  bool AppendName = true;
+  if (Existing) {
+    MDTuple *Tuple = cast<MDTuple>(Existing);
+    for (auto &N : Tuple->operands()) {
+      if (cast<MDString>(N.get())->getString() == annotation)
+        AppendName = false;
+      Names.emplace_back(N.get());
+    }
+  }
+  if (AppendName)
+    Names.emplace_back(MDB.createString(annotation));
+
+  MDNode *MD = MDTuple::get(Context, Names);
+  f->setMetadata(obfkindid, MD);
+}
+
+bool AreUsersInOneFunction(GlobalVariable *GV) {
+  SmallPtrSet<Function *, 6> userFunctions;
+  for (User *U : GV->users()) {
+    if (Instruction *I = dyn_cast<Instruction>(U)) {
+      userFunctions.insert(I->getFunction());
+    } else if (ConstantExpr *CE = dyn_cast<ConstantExpr>(U)) {
+      for (User *U2 : CE->users()) {
+        if (Instruction *I = dyn_cast<Instruction>(U2)) {
+          userFunctions.insert(I->getFunction());
+        }
+      }
+    } else {
+      return false;
+    }
+  }
+  return userFunctions.size() <= 1;
 }
