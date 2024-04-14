@@ -36,6 +36,14 @@ static cl::opt<int> SplitNum("split_num", cl::init(3), cl::desc("Split <split_nu
  * @return PreservedAnalyses 
  */
 PreservedAnalyses SplitBasicBlockPass::run(Function& F, FunctionAnalysisManager& AM) {
+    // Check if the number of applications is correct
+    if (!((SplitNum > 1) && (SplitNum <= 10))) {
+      outs()
+          << "Split application basic block percentage -split_num=x must be 1 "
+             "< x <= 10";
+      return PreservedAnalyses::all();
+    } 
+
     Function *tmp = &F; // 传入的Function
     if (toObfuscate(flag, tmp, "split")){ // 判断什么函数需要开启混淆
         outs() << "\033[1;32m[SplitBasicBlock] Function : " << F.getName() << "\033[0m\n"; // 打印一下被混淆函数的symbol
@@ -50,57 +58,60 @@ PreservedAnalyses SplitBasicBlockPass::run(Function& F, FunctionAnalysisManager&
  * 
  * @param BB 
  */
-void SplitBasicBlockPass::split(Function *f){
-    std::vector<BasicBlock *> origBB;
-    // 保存所有基本块 防止分割的同时迭代新的基本块
-    for (Function::iterator I = f->begin(), IE = f->end(); I != IE; ++I){
-        origBB.push_back(&*I);
-    }
-    // 遍历函数的全部基本块
-    for (std::vector<BasicBlock *>::iterator I = origBB.begin(), IE = origBB.end();I != IE; ++I){
-        BasicBlock *curr = *I;
-        //outs() << "\033[1;32mSplitNum : " << SplitNum << "\033[0m\n";
-        //outs() << "\033[1;32mBasicBlock Size : " << curr->size() << "\033[0m\n";
-        int splitN = SplitNum;
-        // 无需分割只有一条指令的基本块
-        // 不可分割含有PHI指令基本块
-        if (curr->size() < 2 || containsPHI(curr)){
-            //outs() << "\033[0;33mThis BasicBlock is lower then two or had PIH Instruction!\033[0m\n";
-            continue;
-        }
-        // 检查splitN和基本块大小 如果传入的分割块数甚至大于等于基本块自身大小 则修改分割数为基本块大小减一
-        if ((size_t)splitN >= curr->size()){
-            //outs() << "\033[0;33mSplitNum is bigger then currBasicBlock's size\033[0m\n"; // warning
-            //outs() << "\033[0;33mSo SplitNum Now is BasicBlock's size -1 : " << (curr->size() - 1) << "\033[0m\n";
-            splitN = curr->size() - 1;
-        } else {
-            //outs() << "\033[1;32msplitNum Now is " << splitN << "\033[0m\n";
-        }
-        // Generate splits point
-        std::vector<int> test;
-        for (unsigned i = 1; i < curr->size(); ++i){
-            test.push_back(i);
-        }
-        // Shuffle
-        if (test.size() != 1){
-            shuffle(test);
-            std::sort(test.begin(), test.begin() + splitN);
-        }
-        // 分割
-        BasicBlock::iterator it = curr->begin();
-        BasicBlock *toSplit = curr;
-        int last = 0;
-        for (int i = 0; i < splitN; ++i){
-            if (toSplit->size() < 2){
-                continue;
-            }
-            for (int j = 0; j < test[i] - last; ++j){
-                ++it;
-            }
-            last = test[i];
-            toSplit = toSplit->splitBasicBlock(it, toSplit->getName() + ".split");
-        }
-        ++Split;
+void SplitBasicBlockPass::split(Function *F){
+    SmallVector<BasicBlock *, 16> origBB;
+    size_t split_ctr = 0;
+
+    // Save all basic blocks
+    for (BasicBlock &BB : *F)
+      origBB.emplace_back(&BB);
+
+    for (BasicBlock *currBB : origBB) {
+      if (currBB->size() < 2 || containsPHI(currBB) ||
+          containsSwiftError(currBB))
+        continue;
+
+      if ((size_t)SplitNum > currBB->size() - 1)
+        split_ctr = currBB->size() - 1;
+      else
+        split_ctr = (size_t)SplitNum;
+
+      // Generate splits point (count number of the LLVM instructions in the
+      // current BB)
+      SmallVector<size_t, 32> llvm_inst_ord;
+      for (size_t i = 1; i < currBB->size(); ++i)
+        llvm_inst_ord.emplace_back(i);
+
+      // Shuffle
+      split_point_shuffle(llvm_inst_ord);
+      std::sort(llvm_inst_ord.begin(), llvm_inst_ord.begin() + split_ctr);
+
+      // Split
+      size_t llvm_inst_prev_offset = 0;
+      BasicBlock::iterator curr_bb_it = currBB->begin();
+      BasicBlock *curr_bb_offset = currBB;
+
+      for (size_t i = 0; i < split_ctr; ++i) {
+        for (size_t j = 0; j < llvm_inst_ord[i] - llvm_inst_prev_offset; ++j)
+          ++curr_bb_it;
+
+        llvm_inst_prev_offset = llvm_inst_ord[i];
+
+        // https://github.com/eshard/obfuscator-llvm/commit/fff24c7a1555aa3ae7160056b06ba1e0b3d109db
+        /* TODO: find a real fix or try with the probe-stack inline-asm when its
+         * ready. See https://github.com/Rust-for-Linux/linux/issues/355.
+         * Sometimes moving an alloca from the entry block to the second block
+         * causes a segfault when using the "probe-stack" attribute (observed
+         * with with Rust programs). To avoid this issue we just split the entry
+         * block after the allocas in this case.
+         */
+        if (F->hasFnAttribute("probe-stack") && currBB->isEntryBlock() &&
+            isa<AllocaInst>(curr_bb_it))
+          continue;
+
+        curr_bb_offset = curr_bb_offset->splitBasicBlock(
+            curr_bb_it, curr_bb_offset->getName() + ".split");
+      }
     }
 }
 
@@ -120,16 +131,23 @@ bool SplitBasicBlockPass::containsPHI(BasicBlock *BB){
     return false;
 }
 
+bool SplitBasicBlockPass::containsSwiftError(BasicBlock *BB) {
+    for (Instruction &I : *BB)
+        if (AllocaInst *AI = dyn_cast<AllocaInst>(&I))
+            if (AI->isSwiftError())
+                return true;
+    return false;
+}
+
 /**
  * @brief 辅助分割流程的函数
  * 
  * @param vec 
  */
-void SplitBasicBlockPass::shuffle(std::vector<int> &vec){
+void SplitBasicBlockPass::split_point_shuffle(SmallVector<size_t, 32> &vec) {
     int n = vec.size();
-    for (int i = n - 1; i > 0; --i){
-        std::swap(vec[i], vec[cryptoutils->get_uint32_t() % (i + 1)]);
-    }
+    for (int i = n - 1; i > 0; --i)
+        std::swap(vec[i], vec[cryptoutils->get_range(i + 1)]);
 }
 
 /**
