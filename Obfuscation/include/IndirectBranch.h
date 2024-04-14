@@ -6,14 +6,16 @@
 #include "llvm/IR/InstIterator.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/Module.h"
-#include "llvm/IR/Value.h"
-#include "llvm/Pass.h"
+#include "llvm/IR/NoFolder.h"
+#include "llvm/Passes/PassBuilder.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/raw_ostream.h"
-#include "llvm/Transforms/Utils/ModuleUtils.h"
 #include "llvm/Transforms/Utils/BasicBlockUtils.h"
+#include "llvm/Transforms/Utils/LowerSwitch.h"
+#include "llvm/Transforms/Utils/ModuleUtils.h"
 // User libs
 #include "Utils.h"
+#include "CryptoUtils.h"
 using namespace llvm;
 using namespace std;
 namespace llvm{ // 间接跳转
@@ -22,14 +24,15 @@ namespace llvm{ // 间接跳转
             bool flag;
             bool initialized;
             map<BasicBlock *, unsigned long long> indexmap;
+            std::map<Function *, ConstantInt *> encmap;
             IndirectBranchPass(bool flag){
                 this->flag = flag;
             } // 携带flag的构造函数
-            PreservedAnalyses run(Module &M, ModuleAnalysisManager &AM); // Pass实现函数
+            PreservedAnalyses run(Function &F, FunctionAnalysisManager &FM); // Pass实现函数
             bool initialize(Module &M); // 开始初始化
-            bool HandleFunction(Function &Func); // 处理间接跳转
+            PreservedAnalyses HandleFunction(Function &Func); // 处理间接跳转
             bool doFinalization(Module &M); // 结束初始化
-            static bool isRequired() { return true; } // 直接返回true即可
+            void shuffleBasicBlocks(Function &F);
     };
     IndirectBranchPass *createIndirectBranch(bool flag); // 创建间接跳转
 }

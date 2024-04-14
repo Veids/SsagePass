@@ -17,100 +17,241 @@
  */
 #include "IndirectBranch.h"
 
-PreservedAnalyses IndirectBranchPass::run(Module &M, ModuleAnalysisManager& AM) {
-    vector<Function *> funcs;
-    for (Module::iterator iter = M.begin(); iter != M.end(); iter++) {
-        funcs.push_back(&*iter);
-    }
-    for (Function *F : funcs) {
-        if (toObfuscate(flag, F, "indibr")) {
-            outs() << "\033[1;32m[IndirectBranch] Function : " << F->getName() << "\033[0m\n"; // 打印一下被混淆函数的symbol
-            HandleFunction(*F);
-        }
-    }
-    return PreservedAnalyses::all();
+static cl::opt<bool>
+    UseStack("indibran-use-stack", cl::init(true), cl::NotHidden,
+             cl::desc("[IndirectBranch]Stack-based indirect jumps"));
+static bool UseStackTemp = true;
+
+static cl::opt<bool>
+    EncryptJumpTarget("indibran-enc-jump-target", cl::init(false),
+                      cl::NotHidden,
+                      cl::desc("[IndirectBranch]Encrypt jump target"));
+static bool EncryptJumpTargetTemp = false;
+
+PreservedAnalyses IndirectBranchPass::run(Function &F, FunctionAnalysisManager& FM) {
+    if (!toObfuscate(flag, &F, "indibr"))
+        return PreservedAnalyses::all();
+
+    outs() << "\033[1;32m[IndirectBranch] Function : " << F.getName() << "\033[0m\n"; // 打印一下被混淆函数的symbol
+    return HandleFunction(F);
 }
 
-bool IndirectBranchPass::HandleFunction(Function &Func){ 
-    if (this->initialized == false) {
-      initialize(*Func.getParent());
-      this->initialized = true;
-    }
-    vector<BranchInst *> BIs;
-    for (inst_iterator I = inst_begin(Func); I != inst_end(Func); I++) {
-      Instruction *Inst = &(*I);
-      if (BranchInst *BI = dyn_cast<BranchInst>(Inst)) {
-        BIs.push_back(BI);
-      }
-    } // Finish collecting branching conditions
-    Value *zero = ConstantInt::get(Type::getInt32Ty(Func.getParent()->getContext()), 0);
-    for (BranchInst *BI : BIs) {
-        IRBuilder<> IRB(BI);
-        vector<BasicBlock *> BBs;
-        // We use the condition's evaluation result to generate the GEP
-        // instruction  False evaluates to 0 while true evaluates to 1.  So here
-        // we insert the false block first
-        if (BI->isConditional()) {
-            BBs.push_back(BI->getSuccessor(1));
-        }
-        BBs.push_back(BI->getSuccessor(0));
-        ArrayType *AT = ArrayType::get(Type::getInt8PtrTy(Func.getParent()->getContext()), BBs.size());
-        vector<Constant *> BlockAddresses;
-        for (unsigned i = 0; i < BBs.size(); i++) {
-            BlockAddresses.push_back(BlockAddress::get(BBs[i]));
-        }
-        GlobalVariable *LoadFrom = NULL;
+PreservedAnalyses IndirectBranchPass::HandleFunction(Function &Func){ 
+    Module *M = Func.getParent();
+    if (!this->initialized)
+      initialize(*M);
 
-        if (BI->isConditional() || indexmap.find(BI->getSuccessor(0)) == indexmap.end()) {
-            // Create a new GV
-            Constant *BlockAddressArray = ConstantArray::get(AT, ArrayRef<Constant *>(BlockAddresses));
-            LoadFrom = new GlobalVariable(*Func.getParent(), AT, false, GlobalValue::LinkageTypes::PrivateLinkage, BlockAddressArray, "Oo0ooO0o00OConditionalLocalIndirectBranchingTable"); // 移除Hikari特征
-            appendToCompilerUsed(*Func.getParent(), {LoadFrom});
+    SmallVector<BranchInst *, 32> BIs;
+    for (Instruction &Inst : instructions(Func))
+      if (BranchInst *BI = dyn_cast<BranchInst>(&Inst))
+        BIs.emplace_back(BI);
+
+    Type *Int8Ty = Type::getInt8Ty(M->getContext());
+    Type *Int32Ty = Type::getInt32Ty(M->getContext());
+    Type *Int8PtrTy = Type::getInt8PtrTy(M->getContext());
+
+    Value *zero = ConstantInt::get(Int32Ty, 0);
+
+    IRBuilder<NoFolder> *IRBEntry =
+        new IRBuilder<NoFolder>(&Func.getEntryBlock().front());
+    for (BranchInst *BI : BIs) {
+      if (UseStackTemp &&
+          IRBEntry->GetInsertPoint() !=
+              (BasicBlock::iterator)Func.getEntryBlock().front())
+        IRBEntry->SetInsertPoint(Func.getEntryBlock().getTerminator());
+      IRBuilder<NoFolder> *IRBBI = new IRBuilder<NoFolder>(BI);
+      SmallVector<BasicBlock *, 16> BBs;
+      // We use the condition's evaluation result to generate the GEP
+      // instruction  False evaluates to 0 while true evaluates to 1.  So here
+      // we insert the false block first
+      if (BI->isConditional() && !BI->getSuccessor(1)->isEntryBlock())
+        BBs.emplace_back(BI->getSuccessor(1));
+      if (!BI->getSuccessor(0)->isEntryBlock())
+        BBs.emplace_back(BI->getSuccessor(0));
+
+      GlobalVariable *LoadFrom = nullptr;
+      if (BI->isConditional() ||
+          indexmap.find(BI->getSuccessor(0)) == indexmap.end()) {
+        ArrayType *AT = ArrayType::get(Int8PtrTy, BBs.size());
+        SmallVector<Constant *, 16> BlockAddresses;
+        for (BasicBlock *BB : BBs)
+          BlockAddresses.emplace_back(
+              EncryptJumpTargetTemp ? ConstantExpr::getGetElementPtr(
+                                          Int8Ty,
+                                          ConstantExpr::getBitCast(
+                                              BlockAddress::get(BB), Int8PtrTy),
+                                          encmap[&Func])
+                                    : BlockAddress::get(BB));
+        // Create a new GV
+        Constant *BlockAddressArray =
+            ConstantArray::get(AT, ArrayRef<Constant *>(BlockAddresses));
+        LoadFrom = new GlobalVariable(
+            *M, AT, false, GlobalValue::LinkageTypes::PrivateLinkage,
+            BlockAddressArray, "HikariConditionalLocalIndirectBranchingTable");
+        appendToCompilerUsed(*Func.getParent(), {LoadFrom});
+      } else {
+        LoadFrom = M->getGlobalVariable("IndirectBranchingGlobalTable", true);
+      }
+      AllocaInst *LoadFromAI = nullptr;
+      if (UseStackTemp) {
+        LoadFromAI = IRBEntry->CreateAlloca(LoadFrom->getType());
+        IRBEntry->CreateStore(LoadFrom, LoadFromAI);
+      }
+      Value *index, *RealIndex = nullptr;
+      if (BI->isConditional()) {
+        Value *condition = BI->getCondition();
+        Value *zext = IRBBI->CreateZExt(condition, Int32Ty);
+        if (UseStackTemp) {
+          AllocaInst *condAI = IRBEntry->CreateAlloca(Int32Ty);
+          IRBBI->CreateStore(zext, condAI);
+          index = condAI;
         } else {
-            LoadFrom = Func.getParent()->getGlobalVariable("IndirectBranchingGlobalTable", true);
+          index = zext;
         }
-        Value *index = NULL;
-        if (BI->isConditional()) {
-            Value *condition = BI->getCondition();
-            index = IRB.CreateZExt(condition, Type::getInt32Ty(Func.getParent()->getContext()));
+        RealIndex = index;
+      } else {
+        Value *indexval = nullptr;
+        ConstantInt *IndexEncKey =
+            EncryptJumpTargetTemp ? cast<ConstantInt>(ConstantInt::get(
+                                        Int32Ty, cryptoutils->get_uint32_t()))
+                                  : nullptr;
+        if (EncryptJumpTargetTemp) {
+          GlobalVariable *indexgv = new GlobalVariable(
+              *M, Int32Ty, false, GlobalValue::LinkageTypes::PrivateLinkage,
+              ConstantInt::get(IndexEncKey->getType(),
+                               IndexEncKey->getValue() ^
+                                   indexmap[BI->getSuccessor(0)]),
+              "IndirectBranchingIndex");
+          appendToCompilerUsed(*M, {indexgv});
+          indexval = (UseStackTemp ? IRBEntry : IRBBI)
+                         ->CreateLoad(indexgv->getValueType(), indexgv);
         } else {
-            index = ConstantInt::get(Type::getInt32Ty(Func.getParent()->getContext()), indexmap[BI->getSuccessor(0)]);
+          indexval = ConstantInt::get(Int32Ty, indexmap[BI->getSuccessor(0)]);
+          if (UseStackTemp) {
+            AllocaInst *indexAI = IRBEntry->CreateAlloca(Int32Ty);
+            IRBEntry->CreateStore(indexval, indexAI);
+            indexval = IRBBI->CreateLoad(indexAI->getAllocatedType(), indexAI);
+          }
         }
-        Value *GEP = IRB.CreateGEP(LoadFrom->getValueType(), LoadFrom, {zero, index});
-        LoadInst *LI = IRB.CreateLoad(GEP->getType(), GEP, "IndirectBranchingTargetAddress");
-        IndirectBrInst *indirBr = IndirectBrInst::Create(LI, BBs.size());
-        for (BasicBlock *BB : BBs){
-            indirBr->addDestination(BB);
-        }
-        ReplaceInstWithInst(BI, indirBr);
+        index = indexval;
+        RealIndex = EncryptJumpTargetTemp ? IRBBI->CreateXor(index, IndexEncKey)
+                                          : index;
+      }
+      Value *LI, *enckeyLoad, *gepptr = nullptr;
+      if (UseStackTemp) {
+        LoadInst *LILoadFrom =
+            IRBBI->CreateLoad(LoadFrom->getType(), LoadFromAI);
+        Value *GEP = IRBBI->CreateGEP(
+            LoadFrom->getValueType(), LILoadFrom,
+            {zero, BI->isConditional() ? IRBBI->CreateLoad(Int32Ty, RealIndex)
+                                       : RealIndex});
+        if (!EncryptJumpTargetTemp)
+          LI = IRBBI->CreateLoad(Int8PtrTy, GEP,
+                                 "IndirectBranchingTargetAddress");
+        else
+          gepptr = IRBBI->CreateLoad(Int8PtrTy, GEP);
+      } else {
+        Value *GEP = IRBBI->CreateGEP(LoadFrom->getValueType(), LoadFrom,
+                                      {zero, RealIndex});
+        if (!EncryptJumpTargetTemp)
+          LI = IRBBI->CreateLoad(Int8PtrTy, GEP,
+                                 "IndirectBranchingTargetAddress");
+        else
+          gepptr = IRBBI->CreateLoad(Int8PtrTy, GEP);
+      }
+      if (EncryptJumpTargetTemp) {
+        ConstantInt *encenckey = cast<ConstantInt>(
+            ConstantInt::get(Int32Ty, cryptoutils->get_uint32_t()));
+        GlobalVariable *enckeyGV = new GlobalVariable(
+            *M, Int32Ty, false, GlobalValue::LinkageTypes::PrivateLinkage,
+            ConstantInt::get(Int32Ty,
+                             encenckey->getValue() ^ encmap[&Func]->getValue()),
+            "IndirectBranchingAddressEncryptKey");
+        appendToCompilerUsed(*M, enckeyGV);
+        enckeyLoad = IRBBI->CreateXor(
+            IRBBI->CreateLoad(enckeyGV->getValueType(), enckeyGV), encenckey);
+        LI =
+            IRBBI->CreateGEP(Int8Ty, gepptr, IRBBI->CreateSub(zero, enckeyLoad),
+                             "IndirectBranchingTargetAddress");
+      }
+      IndirectBrInst *indirBr = IndirectBrInst::Create(LI, BBs.size());
+      for (BasicBlock *BB : BBs)
+        indirBr->addDestination(BB);
+      ReplaceInstWithInst(BI, indirBr);
     }
-    return true;
+    shuffleBasicBlocks(Func);
+    return PreservedAnalyses::none();
 }
 
 bool IndirectBranchPass::initialize(Module & M){
-    vector<Constant *> BBs;
+    PassBuilder PB;
+    FunctionAnalysisManager FAM;
+    FunctionPassManager FPM;
+    PB.registerFunctionAnalyses(FAM);
+    FPM.addPass(LowerSwitchPass());
+
+    SmallVector<Constant *, 32> BBs;
     unsigned long long i = 0;
-    for (auto F = M.begin(); F != M.end(); F++){
-        for (auto BB = F->begin(); BB != F->end(); BB++){
-            BasicBlock *BBPtr = &*BB;
-            if (BBPtr != &(BBPtr->getParent()->getEntryBlock())){
-                indexmap[BBPtr] = i++;
-                BBs.push_back(BlockAddress::get(BBPtr));
-            }
+    for (Function &F : M) {
+      if (!toObfuscate(flag, &F, "indibr"))
+        continue;
+      if (!toObfuscateBoolOption(&F, "indibran_use_stack", &UseStackTemp))
+        UseStackTemp = UseStack;
+
+      // See https://github.com/61bcdefg/Hikari-LLVM15/issues/32
+      FPM.run(F, FAM);
+
+      if (!toObfuscateBoolOption(&F, "indibran_enc_jump_target",
+                                 &EncryptJumpTargetTemp))
+        EncryptJumpTargetTemp = EncryptJumpTarget;
+
+      if (EncryptJumpTargetTemp)
+        encmap[&F] = ConstantInt::get(
+            Type::getInt32Ty(M.getContext()),
+            cryptoutils->get_range(UINT8_MAX, UINT16_MAX * 2) * 4);
+      for (BasicBlock &BB : F)
+        if (!BB.isEntryBlock()) {
+          indexmap[&BB] = i++;
+          BBs.emplace_back(EncryptJumpTargetTemp
+                               ? ConstantExpr::getGetElementPtr(
+                                     Type::getInt8Ty(M.getContext()),
+                                     ConstantExpr::getBitCast(
+                                         BlockAddress::get(&BB),
+                                         Type::getInt8PtrTy(M.getContext())),
+                                     encmap[&F])
+                               : BlockAddress::get(&BB));
         }
     }
-    ArrayType *AT = ArrayType::get(Type::getInt8PtrTy(M.getContext()), BBs.size());
-    Constant *BlockAddressArray = ConstantArray::get(AT, ArrayRef<Constant *>(BBs));
-    GlobalVariable *Table = new GlobalVariable(M, AT, false, GlobalValue::LinkageTypes::InternalLinkage, BlockAddressArray, "IndirectBranchingGlobalTable");
+    ArrayType *AT =
+        ArrayType::get(Type::getInt8PtrTy(M.getContext()), BBs.size());
+    Constant *BlockAddressArray =
+        ConstantArray::get(AT, ArrayRef<Constant *>(BBs));
+    GlobalVariable *Table = new GlobalVariable(
+        M, AT, false, GlobalValue::LinkageTypes::PrivateLinkage,
+        BlockAddressArray, "IndirectBranchingGlobalTable");
     appendToCompilerUsed(M, {Table});
+    this->initialized = true;
     return true;
 }
 
-bool IndirectBranchPass::doFinalization(Module & M){
-    indexmap.clear();
-    initialized = false;
-    return false;
-}
+void IndirectBranchPass::shuffleBasicBlocks(Function &F) {
+    SmallVector<BasicBlock *, 32> blocks;
+    for (BasicBlock &block : F)
+      if (!block.isEntryBlock())
+        blocks.emplace_back(&block);
+
+    if (blocks.size() < 2)
+      return;
+
+    for (size_t i = blocks.size() - 1; i > 0; i--)
+      std::swap(blocks[i], blocks[cryptoutils->get_range(i + 1)]);
+
+    Function::iterator fi = F.begin();
+    for (BasicBlock *block : blocks) {
+      fi++;
+      block->moveAfter(&*(fi));
+    }
+  }
 
 /**
  * @brief 便于调用间接指令

@@ -88,6 +88,10 @@ llvm::PassPluginLibraryInfo getSsagePluginInfo() {
                   FPM.addPass(VMFlattenPass(true));
                   return true;
                 }
+                if(Name == "indibr"){
+                  FPM.addPass(IndirectBranchPass(true));
+                  return true;
+                }
                 return false;
             });
             // // for opt
@@ -104,10 +108,6 @@ llvm::PassPluginLibraryInfo getSsagePluginInfo() {
                   }
                   if (Name == "ipobf"){
                     MPM.addPass(IPObfuscationContext(true));
-                    return true;
-                  }
-                  if (Name == "indibr"){
-                    MPM.addPass(IndirectBranchPass(true));
                     return true;
                   }
                   if (Name == "strcry"){
@@ -127,8 +127,6 @@ llvm::PassPluginLibraryInfo getSsagePluginInfo() {
                           MPM.addPass(FunctionWrapperPass(true));
                         } else if (Name == "ipobf"){
                           MPM.addPass(IPObfuscationContext(true));
-                        } else if (Name == "indibr"){
-                          MPM.addPass(IndirectBranchPass(true));
                         } else if (Name == "strcry"){
                           MPM.addPass(HikariStringEncryptionPass(true));
                         }
@@ -148,6 +146,8 @@ llvm::PassPluginLibraryInfo getSsagePluginInfo() {
                             FPM.addPass(BogusControlFlowPass(true));
                           } else if(Name == "function(vmf)"){ // 注册虚假控制流
                             FPM.addPass(VMFlattenPass(true));
+                          } else if(Name == "function(indibr)"){
+                            FPM.addPass(IndirectBranchPass(true));
                           } else {
                             continue;
                           }
