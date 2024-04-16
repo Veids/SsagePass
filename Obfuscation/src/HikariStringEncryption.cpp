@@ -27,6 +27,7 @@ bool HikariStringEncryptionPass::handleableGV(GlobalVariable *GV) {
         !(GV->getSection().contains("__objc") &&
           !GV->getSection().contains("array")) &&
         !GV->getName().contains("OBJC") &&
+
         std::find(genedgv.begin(), genedgv.end(), GV) == genedgv.end() &&
         ((GV->getLinkage() == GlobalValue::LinkageTypes::PrivateLinkage ||
           GV->getLinkage() == GlobalValue::LinkageTypes::InternalLinkage) &&
@@ -39,7 +40,11 @@ PreservedAnalyses HikariStringEncryptionPass::run(Module &M, ModuleAnalysisManag
     // in runOnModule. We simple iterate function list and dispatch functions
     // to handlers
     this->appleptrauth = hasApplePtrauth(&M);
+#if LLVM_VERSION_MAJOR >= 17
+    this->opaquepointers = true;
+#else
     this->opaquepointers = !M.getContext().supportsTypedPointers();
+#endif
 
     for (Function &F : M)
         if (toObfuscate(flag, &F, "strcry")) {
@@ -54,7 +59,7 @@ PreservedAnalyses HikariStringEncryptionPass::run(Module &M, ModuleAnalysisManag
                         (ElementEncryptProbTemp <= 100))) {
                 errs() << "\033[1;32m[HikariStringEncryption] Application "
                     "element percentage -strcry_prob=x must be 0 < x <= 100\033[0m\n";
-                return PreservedAnalyses::none();
+                return PreservedAnalyses::all();
             }
             Constant *S =
                 ConstantInt::getNullValue(Type::getInt32Ty(M.getContext()));
@@ -64,7 +69,7 @@ PreservedAnalyses HikariStringEncryptionPass::run(Module &M, ModuleAnalysisManag
             encstatus[&F] = GV;
             HandleFunction(&F);
         }
-    return PreservedAnalyses::all();
+    return PreservedAnalyses::none();
 }
 
 void HikariStringEncryptionPass::processStructMembers(ConstantStruct *CS,
