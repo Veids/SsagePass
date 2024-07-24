@@ -55,14 +55,6 @@ static std::set<std::string> getStringList(yaml::Node *n) {
     return filter;
 }
 
-bool ObfuscationOptions::skipFunction(const Twine &FName) {
-    if (FName.str().find("goron_") == std::string::npos) {
-        return hasFilter && FunctionFilter.count(FName.str()) == 0;
-    } else {
-        return true;
-    }
-}
-
 void ObfuscationOptions::handleRoot(yaml::Node *n) {
     if (!n){
         return;

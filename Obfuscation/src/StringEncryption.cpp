@@ -59,7 +59,7 @@ PreservedAnalyses StringEncryptionPass::run(Module &M, ModuleAnalysisManager& AM
                 insertArrayDecryption(M, {GV, key, eleNum}, arrData);
             } else if (intData) {
                 uint64_t key = cryptoutils->get_uint64_t();
-                ConstantInt *enc =
+                Constant *enc =
                     CONST(intData->getType(), key ^ intData->getZExtValue());
                 GV->setInitializer(enc);
                 GV->setConstant(false);

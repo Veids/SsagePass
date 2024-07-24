@@ -59,10 +59,17 @@ void fixStack(Function *f) {
         }
       }
     }
+#if LLVM_VERSION_MAJOR >= 19
+    for (Instruction *I : tmpReg)
+      DemoteRegToStack(*I, false, AllocaInsertionPoint->getIterator());
+    for (PHINode *P : tmpPhi)
+      DemotePHIToStack(P, AllocaInsertionPoint->getIterator());
+#else
     for (Instruction *I : tmpReg)
       DemoteRegToStack(*I, false, AllocaInsertionPoint);
     for (PHINode *P : tmpPhi)
       DemotePHIToStack(P, AllocaInsertionPoint);
+#endif
   } while (tmpReg.size() != 0 || tmpPhi.size() != 0);
 }
 
@@ -74,8 +81,28 @@ bool readFlag(Function *f, std::string attribute) {
     Instruction *Inst = &I;
     if (CallInst *CI = dyn_cast<CallInst>(Inst)) {
       if (CI->getCalledFunction() != nullptr &&
-          CI->getCalledFunction()->getName().contains("hikari_" + attribute)) {
+          CI->getCalledFunction()->getName().starts_with("hikari_" + attribute)) {
         CI->eraseFromParent();
+        return true;
+      }
+    }
+    if (InvokeInst *II = dyn_cast<InvokeInst>(Inst)) {
+      if (II->getCalledFunction() != nullptr &&
+          II->getCalledFunction()->getName().starts_with("hikari_" +
+                                                         attribute)) {
+        BasicBlock *normalDest = II->getNormalDest();
+        BasicBlock *unwindDest = II->getUnwindDest();
+        BasicBlock *parent = II->getParent();
+        if (parent->size() == 1) {
+          parent->replaceAllUsesWith(normalDest);
+          II->eraseFromParent();
+          parent->eraseFromParent();
+        } else {
+          BranchInst::Create(normalDest, II);
+          II->eraseFromParent();
+        }
+        if (pred_size(unwindDest) == 0)
+          unwindDest->eraseFromParent();
         return true;
       }
     }
@@ -121,7 +148,7 @@ bool llvm::readAnnotationMetadataUint32OptVal(Function *f, std::string opt,
     for (auto &N : Tuple->operands()) {
       StringRef mdstr = cast<MDString>(N.get())->getString();
       std::string estr = opt + "=";
-      if (mdstr.startswith(estr)) {
+      if (mdstr.starts_with(estr)) {
         *val = atoi(mdstr.substr(strlen(estr.c_str())).str().c_str());
         return true;
       }
@@ -135,10 +162,32 @@ bool llvm::readFlagUint32OptVal(Function *f, std::string opt, uint32_t *val) {
     Instruction *Inst = &I;
     if (CallInst *CI = dyn_cast<CallInst>(Inst)) {
       if (CI->getCalledFunction() != nullptr &&
-          CI->getCalledFunction()->getName().contains("hikari_" + opt)) {
+          CI->getCalledFunction()->getName().starts_with("hikari_" + opt)) {
         if (ConstantInt *C = dyn_cast<ConstantInt>(CI->getArgOperand(0))) {
           *val = (uint32_t)C->getValue().getZExtValue();
           CI->eraseFromParent();
+          return true;
+        }
+      }
+    }
+    if (InvokeInst *II = dyn_cast<InvokeInst>(Inst)) {
+      if (II->getCalledFunction() != nullptr &&
+          II->getCalledFunction()->getName().starts_with("hikari_" + opt)) {
+        if (ConstantInt *C = dyn_cast<ConstantInt>(II->getArgOperand(0))) {
+          *val = (uint32_t)C->getValue().getZExtValue();
+          BasicBlock *normalDest = II->getNormalDest();
+          BasicBlock *unwindDest = II->getUnwindDest();
+          BasicBlock *parent = II->getParent();
+          if (parent->size() == 1) {
+            parent->replaceAllUsesWith(normalDest);
+            II->eraseFromParent();
+            parent->eraseFromParent();
+          } else {
+            BranchInst::Create(normalDest, II);
+            II->eraseFromParent();
+          }
+          if (pred_size(unwindDest) == 0)
+            unwindDest->eraseFromParent();
           return true;
         }
       }

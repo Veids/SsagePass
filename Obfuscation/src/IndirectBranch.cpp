@@ -32,6 +32,9 @@ PreservedAnalyses IndirectBranchPass::run(Function &F, FunctionAnalysisManager& 
     if (!toObfuscate(flag, &F, "indibr"))
         return PreservedAnalyses::all();
 
+   if (std::find(to_obf_funcs.begin(), to_obf_funcs.end(), &F) ==
+        to_obf_funcs.end())
+      return PreservedAnalyses::all();
     outs() << "\033[1;32m[IndirectBranch] Function : " << F.getName() << "\033[0m\n"; // 打印一下被混淆函数的symbol
     return HandleFunction(F);
 }
@@ -48,7 +51,7 @@ PreservedAnalyses IndirectBranchPass::HandleFunction(Function &Func){
 
     Type *Int8Ty = Type::getInt8Ty(M->getContext());
     Type *Int32Ty = Type::getInt32Ty(M->getContext());
-    Type *Int8PtrTy = Type::getInt8PtrTy(M->getContext());
+    Type *Int8PtrTy = Type::getInt8Ty(M->getContext())->getPointerTo();
 
     Value *zero = ConstantInt::get(Int32Ty, 0);
 
@@ -212,24 +215,27 @@ bool IndirectBranchPass::initialize(Module & M){
       for (BasicBlock &BB : F)
         if (!BB.isEntryBlock()) {
           indexmap[&BB] = i++;
-          BBs.emplace_back(EncryptJumpTargetTemp
-                               ? ConstantExpr::getGetElementPtr(
-                                     Type::getInt8Ty(M.getContext()),
-                                     ConstantExpr::getBitCast(
-                                         BlockAddress::get(&BB),
-                                         Type::getInt8PtrTy(M.getContext())),
-                                     encmap[&F])
-                               : BlockAddress::get(&BB));
+          BBs.emplace_back(
+              EncryptJumpTargetTemp
+                  ? ConstantExpr::getGetElementPtr(
+                        Type::getInt8Ty(M.getContext()),
+                        ConstantExpr::getBitCast(
+                            BlockAddress::get(&BB),
+                            Type::getInt8Ty(M.getContext())->getPointerTo()),
+                        encmap[&F])
+                  : BlockAddress::get(&BB));
         }
     }
-    ArrayType *AT =
-        ArrayType::get(Type::getInt8PtrTy(M.getContext()), BBs.size());
-    Constant *BlockAddressArray =
-        ConstantArray::get(AT, ArrayRef<Constant *>(BBs));
-    GlobalVariable *Table = new GlobalVariable(
-        M, AT, false, GlobalValue::LinkageTypes::PrivateLinkage,
-        BlockAddressArray, "IndirectBranchingGlobalTable");
-    appendToCompilerUsed(M, {Table});
+    if (to_obf_funcs.size()) {
+      ArrayType *AT = ArrayType::get(
+          Type::getInt8Ty(M.getContext())->getPointerTo(), BBs.size());
+      Constant *BlockAddressArray =
+          ConstantArray::get(AT, ArrayRef<Constant *>(BBs));
+      GlobalVariable *Table = new GlobalVariable(
+          M, AT, false, GlobalValue::LinkageTypes::PrivateLinkage,
+          BlockAddressArray, "IndirectBranchingGlobalTable");
+      appendToCompilerUsed(M, {Table});
+    }
     this->initialized = true;
     return true;
 }

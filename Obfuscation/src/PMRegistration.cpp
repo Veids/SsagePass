@@ -13,6 +13,7 @@
 #include "llvm/Passes/PassBuilder.h"
 #include "llvm/Passes/PassPlugin.h"
 #include "CryptoUtils.h"
+#include "IPObfuscationContext.h"
 
 using namespace llvm;
 

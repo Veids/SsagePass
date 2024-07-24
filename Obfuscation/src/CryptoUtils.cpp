@@ -1,4 +1,4 @@
-// https://github.com/61bcdefg/Hikari-LLVM15-Core/blob/0ba1c7bdfac5c8f41623ea48bcc7fc3b1b40f0d9/CryptoUtils.cpp
+// https://github.com/61bcdefg/Hikari-LLVM15-Core/blob/2655e1ec63fa6b41ca2f52a0dd7e06d28439b54b/CryptoUtils.cpp
 // For open-source license, please refer to
 // [License](https://github.com/HikariObfuscator/Hikari/wiki/License).
 //===----------------------------------------------------------------------===//
@@ -13,9 +13,8 @@ ManagedStatic<CryptoUtils> cryptoutils;
 }
 CryptoUtils::CryptoUtils() {}
 
-uint32_t
-CryptoUtils::scramble32(uint32_t in,
-                        std::map<uint32_t /*IDX*/, uint32_t /*VAL*/> &VMap) {
+uint32_t CryptoUtils::scramble32(
+    uint32_t in, std::unordered_map<uint32_t /*IDX*/, uint32_t /*VAL*/> &VMap) {
   if (VMap.find(in) == VMap.end()) {
     uint32_t V = get_uint32_t();
     VMap[in] = V;

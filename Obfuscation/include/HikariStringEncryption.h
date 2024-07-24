@@ -15,6 +15,7 @@
 // System libs
 #include <map>
 #include <set>
+#include <unordered_set>
 #include <iostream>
 #include <vector>
 
@@ -25,17 +26,22 @@ namespace llvm {
             bool flag;
             bool appleptrauth;
             bool opaquepointers;
-            std::map<Function * /*Function*/, GlobalVariable * /*Decryption Status*/>
+            std::unordered_map<Function * /*Function*/, GlobalVariable * /*Decryption Status*/>
                 encstatus;
-            std::map<GlobalVariable *, std::pair<Constant *, GlobalVariable *>> mgv2keys;
-            std::map<Constant *, SmallVector<unsigned int, 16>> unencryptedindex;
-            vector<GlobalVariable *> genedgv;
+            std::unordered_map<GlobalVariable *, std::pair<Constant *, GlobalVariable *>> mgv2keys;
+            std::unordered_map<Constant *, SmallVector<unsigned int, 16>> unencryptedindex;
+            SmallVector<GlobalVariable *, 32> genedgv;
 
             HikariStringEncryptionPass(bool flag){this->flag = flag;}
             PreservedAnalyses run(Module &M, ModuleAnalysisManager& AM);
 
         private:
             bool handleableGV(GlobalVariable *GV);
+
+            void HandleUser(User *U, SmallVector<GlobalVariable *, 32> &Globals,
+                    std::set<User *> &Users,
+                    std::unordered_set<User *> &VisitedUsers);
+
             void HandleFunction(Function *Func);
 
             GlobalVariable *ObjectiveCString(GlobalVariable *GV, std::string name,
@@ -44,18 +50,15 @@ namespace llvm {
 
             void HandleDecryptionBlock(
                     BasicBlock *B, BasicBlock *C,
-                    std::map<GlobalVariable *, std::pair<Constant *, GlobalVariable *>>
+                    std::unordered_map<GlobalVariable *, std::pair<Constant *, GlobalVariable *>>
                     &GV2Keys);
 
-            void processStructMembers(ConstantStruct *,
-                    std::vector<GlobalVariable *> *,
-                    std::vector<GlobalVariable *> *,
-                    std::set<User *> *, bool *);
-
-            void processArrayMembers(ConstantArray *CA,
-                    std::vector<GlobalVariable *> *,
-                    std::vector<GlobalVariable *> *,
-                    std::set<User *> *, bool *);
+            void processConstantAggregate(
+                    GlobalVariable *strGV, ConstantAggregate *CA,
+                    std::set<GlobalVariable *> *rawStrings,
+                    SmallVector<GlobalVariable *, 32> *unhandleablegvs,
+                    SmallVector<GlobalVariable *, 32> *Globals,
+                    std::set<User *> *Users, bool *breakFor);
     };
     HikariStringEncryptionPass *createHikariStringEncryption(bool flag); // 创建字符串加密
 }

@@ -76,7 +76,7 @@ CallSite* FunctionWrapperPass::HandleCallSite(CallSite *CS) {
       return nullptr;
     SmallVector<unsigned int, 8> byvalArgNums;
     if (Function *tmp = dyn_cast<Function>(calledFunction)) {
-      if (tmp->getName().startswith("clang.")) {
+      if (tmp->getName().starts_with("clang.")) {
         // Clang Intrinsic
         return nullptr;
       }

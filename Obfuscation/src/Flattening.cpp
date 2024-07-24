@@ -27,7 +27,7 @@ PreservedAnalyses FlatteningPass::flatten(Function *f){
   const DataLayout &DL = f->getParent()->getDataLayout();
 
   // SCRAMBLER
-  std::map<uint32_t, uint32_t> scrambling_key;
+  std::unordered_map<uint32_t, uint32_t> scrambling_key;
   // END OF SCRAMBLER
 
   PassBuilder PB;
@@ -85,7 +85,7 @@ PreservedAnalyses FlatteningPass::flatten(Function *f){
   // Create switch variable and set as it
   switchVar = new AllocaInst(Type::getInt32Ty(f->getContext()),
                              DL.getAllocaAddrSpace(), "switchVar", oldTerm);
-  switchVarAddr = new AllocaInst(Type::getInt32PtrTy(f->getContext()),
+  switchVarAddr = new AllocaInst(Type::getInt32Ty(f->getContext())->getPointerTo(),
                                  DL.getAllocaAddrSpace(), "", oldTerm);
 
   // Remove jump

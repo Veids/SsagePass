@@ -3,11 +3,8 @@
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/Transforms/Utils/BasicBlockUtils.h"
 #include "llvm/Transforms/Utils/ModuleUtils.h"
-#include "llvm/Transforms/Scalar.h"
-#include "llvm/Analysis/CFG.h"
 // User libs
 #include "ObfuscationOptions.h"
-#include "IPObfuscationContext.h"
 #include "CryptoUtils.h"
 #include "Utils.h"
 // System libs
@@ -16,21 +13,23 @@
 namespace llvm{
     class IndirectCallPass : public PassInfoMixin<IndirectCallPass>{ 
         public:
+            static char ID;
             bool flag;
-            std::vector<CallInst *> CallSites;
-            IPObfuscationContext *IPO;
+            unsigned pointerSize;
+
             ObfuscationOptions *Options;
-            std::vector<Function *> Callees;
             std::map<Function *, unsigned> CalleeNumbering;
+            std::vector<CallInst *> CallSites;
+            std::vector<Function *> Callees;
             CryptoUtils RandomEngine;
+
             IndirectCallPass(bool flag){
                 this->flag = flag;
-            } // 携带flag的构造函数
-            bool doIndirctCall(Function &F);
-            PreservedAnalyses run(Function &F, FunctionAnalysisManager &AM);
-            GlobalVariable *getIndirectCallees(Function &F, ConstantInt *EncKey);
+            }
+
             void NumberCallees(Function &F);
-            static bool isRequired() { return true; }
+            GlobalVariable *getIndirectCallees(Function &F, ConstantInt *EncKey);
+            PreservedAnalyses run(Function &F, FunctionAnalysisManager &AM);
+            bool doIndirctCall(Function &F);
     };
-    IndirectCallPass *createIndirectCall(bool flag);
 }

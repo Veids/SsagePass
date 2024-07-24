@@ -23,8 +23,9 @@ namespace llvm{ // 间接跳转
         public:
             bool flag;
             bool initialized;
-            map<BasicBlock *, unsigned long long> indexmap;
-            std::map<Function *, ConstantInt *> encmap;
+            std::unordered_map<BasicBlock *, unsigned long long> indexmap;
+            std::unordered_map<Function *, ConstantInt *> encmap;
+            std::set<Function *> to_obf_funcs;
             IndirectBranchPass(bool flag){
                 this->flag = flag;
             } // 携带flag的构造函数

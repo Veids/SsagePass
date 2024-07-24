@@ -6,7 +6,6 @@ namespace llvm {
     struct ObfuscationOptions {
         explicit ObfuscationOptions(const Twine &FileName);
         explicit ObfuscationOptions();
-        bool skipFunction(const Twine &FName);
         void dump();
 
         bool EnableIndirectBr;
