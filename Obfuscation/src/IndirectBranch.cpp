@@ -29,9 +29,6 @@ static cl::opt<bool>
 static bool EncryptJumpTargetTemp = false;
 
 PreservedAnalyses IndirectBranchPass::run(Function &F, FunctionAnalysisManager& FM) {
-    if (!toObfuscate(flag, &F, "indibr"))
-        return PreservedAnalyses::all();
-
    if (std::find(to_obf_funcs.begin(), to_obf_funcs.end(), &F) ==
         to_obf_funcs.end())
       return PreservedAnalyses::all();
@@ -39,7 +36,7 @@ PreservedAnalyses IndirectBranchPass::run(Function &F, FunctionAnalysisManager& 
     return HandleFunction(F);
 }
 
-PreservedAnalyses IndirectBranchPass::HandleFunction(Function &Func){ 
+PreservedAnalyses IndirectBranchPass::HandleFunction(Function &Func){
     Module *M = Func.getParent();
     if (!this->initialized)
       initialize(*M);
@@ -198,6 +195,8 @@ bool IndirectBranchPass::initialize(Module & M){
     for (Function &F : M) {
       if (!toObfuscate(flag, &F, "indibr"))
         continue;
+      else
+        to_obf_funcs.insert(&F);
       if (!toObfuscateBoolOption(&F, "indibran_use_stack", &UseStackTemp))
         UseStackTemp = UseStack;
 

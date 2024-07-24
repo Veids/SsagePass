@@ -663,7 +663,7 @@ BasicBlock *BogusControlFlowPass::createAlteredBasicBlock(BasicBlock *basicBlock
       turnOffOptimization(basicBlock->getParent());
     }
     return alteredBB;
-  } // end of createAlteredBasicBlock()
+  // end of createAlteredBasicBlock()
 }
 
 /* doFinalization
