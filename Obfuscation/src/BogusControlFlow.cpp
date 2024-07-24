@@ -118,37 +118,32 @@
 //===----------------------------------------------------------------------------------===//
 #include "BogusControlFlow.h"
 
-namespace {
-    static bool OnlyUsedBy(Value *V, Value *Usr) {
-        for (User *U : V->users())
-        if (U != Usr){
-            return false;
-        }
-        return true;
+static bool OnlyUsedBy(Value *V, Value *Usr) {
+    for (User *U : V->users())
+    if (U != Usr){
+        return false;
     }
-    static void RemoveDeadConstant(Constant *C) {
-        assert(C->use_empty() && "Constant is not dead!");
-        SmallPtrSet<Constant*, 4> Operands;
-        for (Value *Op : C->operands()){
-            if (OnlyUsedBy(Op, C)){
-                Operands.insert(cast<Constant>(Op));
-            }
-        }
-        if (GlobalVariable *GV = dyn_cast<GlobalVariable>(C)) {
-            if (!GV->hasLocalLinkage()){
-                return; // Don't delete non-static globals.
-            }
-            GV->eraseFromParent();
-        } else if (!isa<Function>(C)){
-            if (isa<StructType, ArrayType, VectorType>(C->getType())){
-                C->destroyConstant();
-            }
-        }
-        // If the constant referenced anything, see if we can delete it as well.
-        for (Constant *O : Operands){
-            RemoveDeadConstant(O);
-        }
-    }
+    return true;
+}
+
+static void RemoveDeadConstant(Constant *C) {
+    assert(C->use_empty() && "Constant is not dead!");
+    SmallVector<Constant *, 4> Operands;
+    for (Value *Op : C->operands())
+        if (OnlyUsedBy(Op, C))
+            Operands.emplace_back(cast<Constant>(Op));
+    if (GlobalVariable *GV = dyn_cast<GlobalVariable>(C)) {
+        if (!GV->hasLocalLinkage())
+            return; // Don't delete non-static globals.
+        GV->eraseFromParent();
+    } else if (!isa<Function>(C))
+        if (isa<ArrayType>(C->getType()) || isa<StructType>(C->getType()) ||
+                isa<VectorType>(C->getType()))
+            C->destroyConstant();
+
+    // If the constant referenced anything, see if we can delete it as well.
+    for (Constant *O : Operands)
+        RemoveDeadConstant(O);
 }
 
 #define DEBUG_TYPE "BogusControlFlow"
@@ -235,7 +230,7 @@ PreservedAnalyses BogusControlFlowPass::run(Function& F, FunctionAnalysisManager
     // If fla annotations
     if (toObfuscate(flag, &F, "bcf")){
       outs() << "\033\033[1;32m[BogusControlFlow] Function : " << F.getName() << "\033[0m\n"; // 打印一下被混淆函数的symbol
-      bogus(F);                                                            //
+      bogus(F);
       doF(F);
       return PreservedAnalyses::none();
     }
@@ -357,9 +352,13 @@ void BogusControlFlowPass::addBogusFlow(BasicBlock *basicBlock, Function &F){
     Value *LHS = ConstantInt::get(Type::getInt32Ty(F.getContext()), 1);
     Value *RHS = ConstantInt::get(Type::getInt32Ty(F.getContext()), 1);
 
-    // The always true condition. End of the first block
+#if LLVM_VERSION_MAJOR >= 19
+    ICmpInst *condition = new ICmpInst(basicBlock->end(), ICmpInst::ICMP_EQ,
+                                       LHS, RHS, "BCFPlaceHolderPred");
+#else
     ICmpInst *condition = new ICmpInst(*basicBlock, ICmpInst::ICMP_EQ, LHS, RHS,
                                        "BCFPlaceHolderPred");
+#endif
     needtoedit.emplace_back(condition);
 
     // Jump to the original basic block if the condition is true or
@@ -612,7 +611,11 @@ BasicBlock *BogusControlFlowPass::createAlteredBasicBlock(BasicBlock *basicBlock
       for (Instruction &I : *alteredBB) {
         if (CallInst *CI = dyn_cast<CallInst>(&I)) {
           if (CI->getCalledFunction() != nullptr &&
+#if LLVM_VERSION_MAJOR >= 18
+              CI->getCalledFunction()->getName().starts_with("llvm.dbg"))
+#else
               CI->getCalledFunction()->getName().startswith("llvm.dbg"))
+#endif
             toRemove.emplace_back(CI);
         }
       }
@@ -660,6 +663,7 @@ BasicBlock *BogusControlFlowPass::createAlteredBasicBlock(BasicBlock *basicBlock
       turnOffOptimization(basicBlock->getParent());
     }
     return alteredBB;
+  } // end of createAlteredBasicBlock()
 }
 
 /* doFinalization
