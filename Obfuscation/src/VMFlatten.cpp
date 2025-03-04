@@ -314,11 +314,15 @@ void VMFlattenPass::DoFlatten(Function *f, int seed){
                 }
             }
         }
+
+        BasicBlock &entryBB = f->getEntryBlock();
+        BasicBlock::iterator insertPt = --entryBB.end();
+
         for (unsigned int i = 0; i < tmpReg.size(); i++){
-            DemoteRegToStack(*tmpReg.at(i), f->begin()->getTerminator());
+            DemoteRegToStack(*tmpReg.at(i), false, insertPt);
         }
         for (unsigned int i = 0; i < tmpPhi.size(); i++){
-            DemotePHIToStack(tmpPhi.at(i), f->begin()->getTerminator());
+            DemotePHIToStack(tmpPhi.at(i), insertPt);
         }
     } while (tmpReg.size() != 0 || tmpPhi.size() != 0);
 }

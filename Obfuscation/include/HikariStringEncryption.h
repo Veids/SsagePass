@@ -25,7 +25,6 @@ namespace llvm {
         public:
             bool flag;
             bool appleptrauth;
-            bool opaquepointers;
             std::unordered_map<Function * /*Function*/, GlobalVariable * /*Decryption Status*/>
                 encstatus;
             std::unordered_map<GlobalVariable *, std::pair<Constant *, GlobalVariable *>> mgv2keys;

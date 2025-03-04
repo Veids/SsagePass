@@ -384,8 +384,8 @@ void BogusControlFlowPass::addBogusFlow(BasicBlock *basicBlock, Function &F){
     // of the altered block.. So we erase the terminator created when splitting.
     originalBB->getTerminator()->eraseFromParent();
     // We add at the end a new always true condition
-    ICmpInst *condition2 = new ICmpInst(*originalBB, CmpInst::ICMP_EQ, LHS, RHS,
-                                        "BCFPlaceHolderPred");
+    ICmpInst *condition2 = new ICmpInst(originalBB->end(), ICmpInst::ICMP_EQ,
+                                       LHS, RHS, "BCFPlaceHolderPred");
     needtoedit.emplace_back(condition2);
     // Do random behavior to avoid pattern recognition.
     // This is achieved by jumping to a random BB

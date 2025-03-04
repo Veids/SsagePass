@@ -35,8 +35,9 @@ PreservedAnalyses StringEncryptionPass::run(Module &M, ModuleAnalysisManager& AM
         if (GV->hasInitializer() && GV->getInitializer() &&
             (GV->getName().contains(".str") || !OnlyStr)
             // Do not encrypt globals having a section named "llvm.metadata"
-            && !GV->getSection().equals("llvm.metadata")
-            && GV->getSection().find(StringRef("__objc")) == string::npos && GV->getName().find("OBJC") == string::npos) {
+            && !(GV->getSection() == "llvm.metadata")
+            && !GV->getSection().contains("__objc")
+            && !GV->getSection().contains("OBJC")) {
             Constant *initializer = GV->getInitializer();
             ConstantInt *intData = dyn_cast<ConstantInt>(initializer);
             ConstantDataArray *arrData = dyn_cast<ConstantDataArray>(initializer);

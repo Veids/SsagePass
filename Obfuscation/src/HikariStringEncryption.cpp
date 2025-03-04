@@ -40,11 +40,6 @@ PreservedAnalyses HikariStringEncryptionPass::run(Module &M, ModuleAnalysisManag
     // in runOnModule. We simple iterate function list and dispatch functions
     // to handlers
     this->appleptrauth = hasApplePtrauth(&M);
-#if LLVM_VERSION_MAJOR >= 17
-    this->opaquepointers = true;
-#else
-    this->opaquepointers = !M.getContext().supportsTypedPointers();
-#endif
 
     for (Function &F : M)
         if (toObfuscate(flag, &F, "strcry")) {
@@ -87,7 +82,7 @@ void HikariStringEncryptionPass::processConstantAggregate(
                 unhandleablegvs->emplace_back(GV);
                 continue;
             }
-            Users->insert(opaquepointers ? CA : Op);
+            Users->insert(CA);
             if (std::find(Globals->begin(), Globals->end(), GV) == Globals->end()) {
                 Globals->emplace_back(GV);
                 *breakFor = true;
@@ -382,10 +377,7 @@ void HikariStringEncryptionPass::HandleFunction(Function *Func) {
     for (GlobalVariable *GV : objCStrings) {
       GlobalVariable *PtrauthGV = nullptr;
       if (appleptrauth) {
-        Constant *C = dyn_cast_or_null<Constant>(
-            opaquepointers
-                ? GV->getInitializer()
-                : cast<ConstantExpr>(GV->getInitializer()->getOperand(0)));
+        Constant *C = dyn_cast_or_null<Constant>(GV->getInitializer());
         if (C) {
           PtrauthGV = dyn_cast<GlobalVariable>(C->getOperand(0));
           if (PtrauthGV->getSection() == "llvm.ptrauth") {
@@ -506,8 +498,7 @@ GlobalVariable* HikariStringEncryptionPass::ObjectiveCString(GlobalVariable *GV,
             GV->getType()->getAddressSpace());
     // for arm64e target on Apple LLVM
     if (appleptrauth) {
-        Constant *C = dyn_cast_or_null<Constant>(
-                opaquepointers ? newCS : cast<ConstantExpr>(newCS->getOperand(0)));
+        Constant *C = dyn_cast_or_null<Constant>(newCS);
         GlobalVariable *PtrauthGV = dyn_cast<GlobalVariable>(C->getOperand(0));
         if (PtrauthGV && PtrauthGV->getSection() == "llvm.ptrauth") {
             GlobalVariable *NewPtrauthGV = new GlobalVariable(
